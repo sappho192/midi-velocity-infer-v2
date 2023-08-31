@@ -147,3 +147,18 @@ To manually add midi data to be used in `demo.ipynb`, copy your midi file to `de
 For bonus, you can test this model with ONNX environment!
 
 Check `tf2onnx.ipynb` and `demo_onnx.ipynb` for detail.
+
+## 5. About the dataset
+
+The dataset "MAESTRO" mentioned and used in this repository is originally from following paper.
+
+```
+Curtis Hawthorne, Andriy Stasyuk, Adam Roberts, Ian Simon, Cheng-Zhi Anna Huang,
+  Sander Dieleman, Erich Elsen, Jesse Engel, and Douglas Eck. "Enabling
+  Factorized Piano Music Modeling and Generation with the MAESTRO Dataset."
+  In International Conference on Learning Representations, 2019.
+```
+
+You can access the original dataset from [https://magenta.tensorflow.org/datasets/maestro](https://magenta.tensorflow.org/datasets/maestro).
+
+The dataset is used under a [Creative Commons Attribution Non-Commercial Share-Alike 4.0 (CC BY-NC-SA 4.0)](https://creativecommons.org/licenses/by-nc-sa/4.0/) license.
