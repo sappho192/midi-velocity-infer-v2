@@ -148,6 +148,25 @@ For bonus, you can test this model with ONNX environment!
 
 Check `tf2onnx.ipynb` and `demo_onnx.ipynb` for detail.
 
+
+## 4. Citation (WIP)
+
+If you cite this code or paper in academic research, refer following bibtex code:
+
+```bibtex
+@InProceedings{kim2023music,
+author="Kim, Taein
+and Kim, Yunho",
+title="Piano Velocity Prediction Using a Seq2Seq Model with Attention Mechanism",
+booktitle="2023 Autumn Meeting of the Acoustical Society of Japan",
+year="2023",
+publisher="Acostical Society of Japan",
+pages="???--???",
+isbn="???"
+}
+```
+
+
 ## 5. About the dataset
 
 The dataset "MAESTRO" mentioned and used in this repository is originally from following paper.
