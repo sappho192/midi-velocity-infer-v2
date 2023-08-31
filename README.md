@@ -141,3 +141,9 @@ SAMPLE_LENGTH = 4
 Run `demo.ipynb` to create actual prediction result.
 After you run all the code in `demo.ipynb`, the result midi file will be saved in `demo_dataset` folder.
 To manually add midi data to be used in `demo.ipynb`, copy your midi file to `demo_dataset` folder and then execute `demo.ipynb`.
+
+### 4) Testing with ONNX
+
+For bonus, you can test this model with ONNX environment!
+
+Check `tf2onnx.ipynb` and `demo_onnx.ipynb` for detail.
