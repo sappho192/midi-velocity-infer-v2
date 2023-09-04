@@ -3,6 +3,8 @@
 MIDI Velocity inference based on Seq2seq and Luong Attention.
 This is the implementation code of my recent paper, which is to be presented in the 2023 Autumn meeting of the Acoustical Society of Japan [[Link](https://acoustics.jp/annualmeeting/past-meetings/)].
 
+**Try demo at [http://demo1.sapphosound.com](http://demo1.sapphosound.com/)!**
+
 ## 1. Tested running environment
 
 - Operating System: Linux(Ubuntu 20.04 LTS)
