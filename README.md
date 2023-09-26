@@ -156,7 +156,7 @@ Check `tf2onnx.ipynb` and `demo_onnx.ipynb` for detail.
 If you cite this code or paper in academic research, refer following bibtex code:
 
 ```bibtex
-@InProceedings{kim2023music,
+@InProceedings{kim2023piano,
 author="Kim, Taein
 and Kim, Yunho",
 title="Piano Velocity Prediction Using a Seq2Seq Model with Attention Mechanism",
