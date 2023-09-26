@@ -151,7 +151,7 @@ For bonus, you can test this model with ONNX environment!
 Check `tf2onnx.ipynb` and `demo_onnx.ipynb` for detail.
 
 
-## 4. Citation (WIP)
+## 4. Citation
 
 If you cite this code or paper in academic research, refer following bibtex code:
 
@@ -163,8 +163,7 @@ title="Piano Velocity Prediction Using a Seq2Seq Model with Attention Mechanism"
 booktitle="2023 Autumn Meeting of the Acoustical Society of Japan",
 year="2023",
 publisher="Acostical Society of Japan",
-pages="???--???",
-isbn="???"
+pages="1467--1470"
 }
 ```
 
