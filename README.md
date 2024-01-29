@@ -3,7 +3,9 @@
 MIDI Velocity inference based on Seq2seq and Luong Attention.
 This is the implementation code of my recent paper, which is to be presented in the 2023 Autumn meeting of the Acoustical Society of Japan [[Link](https://acoustics.jp/annualmeeting/past-meetings/)].
 
-**Try demo at [http://demo1.sapphosound.com](http://demo1.sapphosound.com/)!**
+**Presentation**: [[SpeakerDeck](https://speakerdeck.com/sappho192/piano-velocity-prediction-using-a-seq2seq-model-with-attention-mechanism#transcript)]  
+**Paper**: [[Google Drive](https://drive.google.com/file/d/16vrs0tBoso5H2cerp_d1B2_-367YbpjZ/view?usp=sharing)]  
+**Try demo at [http://demo1.sapphosound.com](http://demo1.sapphosound.com/)!**  
 
 ## 1. Tested running environment
 
