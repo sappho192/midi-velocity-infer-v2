@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mvi-v3"
+version = "0.1.0"
+description = "MIDI Velocity Infer v3 baseline package"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "torch>=2.1",
+]
+
+[project.scripts]
+mvi-v3-train = "mvi_v3.cli.train_baseline:main"
+mvi-v3-eval = "mvi_v3.cli.eval_baseline:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["mvi_v3"]
