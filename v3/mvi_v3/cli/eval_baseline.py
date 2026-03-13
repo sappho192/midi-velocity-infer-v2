@@ -26,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stats", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--time-scale", type=float, default=1.0)
+    parser.add_argument("--no-ema", action="store_true", help="Use training weights instead of EMA weights")
     return parser.parse_args()
 
 
@@ -53,7 +54,13 @@ def main() -> None:
     config = BaselineConfig(time_scale=args.time_scale)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = TransformerVelocityModel(config).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    use_ema = not args.no_ema and "ema_state_dict" in checkpoint
+    if use_ema:
+        model.load_state_dict(checkpoint["ema_state_dict"]["shadow"])
+        print("Using EMA weights for evaluation")
+    else:
+        model.load_state_dict(checkpoint["model_state_dict"])
+        print("Using training weights for evaluation")
     model.eval()
 
     pieces = prepare_pieces(args.data_dir, config)

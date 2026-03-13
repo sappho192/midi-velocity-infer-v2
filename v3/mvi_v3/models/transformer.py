@@ -1,10 +1,13 @@
+from __future__ import annotations
+
 import torch
 from torch import nn
 
 from mvi_v3.config import BaselineConfig
 
+from .conditioning import ControlEmbedding
 from .embedding import NoteEmbedding
-from .heads import VelocityHead
+from .heads import StochasticVelocityHead, VelocityHead
 from .position import T5RelativePositionBias
 
 
@@ -58,7 +61,18 @@ class TransformerVelocityModel(nn.Module):
             ]
         )
         self.output_norm = nn.LayerNorm(config.d_model)
-        self.head = VelocityHead(config.d_model)
+
+        # Controllable velocity inference
+        self.enable_controls = config.enable_controls
+        if self.enable_controls:
+            self.control_embedding = ControlEmbedding(config.control_dims, config.d_model)
+
+        # Output head
+        self.stochastic_head = config.stochastic_head
+        if self.stochastic_head:
+            self.head = StochasticVelocityHead(config.d_model)
+        else:
+            self.head = VelocityHead(config.d_model)
 
     def forward(
         self,
@@ -66,8 +80,13 @@ class TransformerVelocityModel(nn.Module):
         register_bucket: torch.Tensor,
         continuous: torch.Tensor,
         padding_mask: torch.Tensor,
-    ) -> torch.Tensor:
+        control_params: torch.Tensor | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         x = self.embedding(pitch, register_bucket, continuous)
+
+        if self.enable_controls:
+            x = x + self.control_embedding(control_params, x.shape[0])
+
         bias = self.position_bias(x.shape[1], x.device)
         for layer in self.layers:
             x = layer(x, padding_mask, bias)

@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 import argparse
+import math
+import time
 from pathlib import Path
 
 import torch
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 from mvi_v3.config import BaselineConfig
@@ -12,8 +17,14 @@ from mvi_v3.data.normalize import fit_dataset_stats
 from mvi_v3.data.windowing import build_windows
 from mvi_v3.io.artifacts import save_json
 from mvi_v3.models.transformer import TransformerVelocityModel
-from mvi_v3.training.checkpointing import save_checkpoint
+from mvi_v3.training.checkpointing import (
+    load_full_checkpoint,
+    restore_rng_states,
+    save_full_checkpoint,
+)
+from mvi_v3.training.ema import ModelEMA
 from mvi_v3.training.engine import run_epoch
+from mvi_v3.training.monitoring import TrainingMonitor
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,10 +32,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-dir", required=True)
     parser.add_argument("--val-dir", required=True)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--time-scale", type=float, default=1.0)
+    parser.add_argument("--resume-from", type=str, default=None)
+    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     return parser.parse_args()
 
 
@@ -34,6 +48,23 @@ def prepare_pieces(path: str, config: BaselineConfig) -> list[list]:
     for piece in pieces:
         prepared.append(add_derived_features(sort_and_reindex(piece), config))
     return prepared
+
+
+def build_scheduler(
+    optimizer: torch.optim.Optimizer,
+    total_steps: int,
+    warmup_fraction: float,
+) -> LambdaLR:
+    """Linear warmup followed by cosine decay."""
+    warmup_steps = int(total_steps * warmup_fraction)
+
+    def lr_lambda(current_step: int) -> float:
+        if current_step < warmup_steps:
+            return current_step / max(warmup_steps, 1)
+        progress = (current_step - warmup_steps) / max(total_steps - warmup_steps, 1)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    return LambdaLR(optimizer, lr_lambda)
 
 
 def main() -> None:
@@ -46,27 +77,176 @@ def main() -> None:
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         time_scale=args.time_scale,
+        patience=args.patience,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
     )
 
+    # Data preparation
     train_pieces = prepare_pieces(args.train_dir, config)
     val_pieces = prepare_pieces(args.val_dir, config)
     stats = fit_dataset_stats(train_pieces, config)
     train_windows = build_windows(train_pieces, stats, config)
     val_windows = build_windows(val_pieces, stats, config)
 
-    train_loader = DataLoader(WindowDataset(train_windows), batch_size=config.batch_size, shuffle=True)
-    val_loader = DataLoader(WindowDataset(val_windows), batch_size=config.batch_size, shuffle=False)
+    train_loader = DataLoader(
+        WindowDataset(train_windows), batch_size=config.batch_size, shuffle=True
+    )
+    val_loader = DataLoader(
+        WindowDataset(val_windows), batch_size=config.batch_size, shuffle=False
+    )
 
+    # Model and optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = TransformerVelocityModel(config).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+    )
 
+    # LR scheduler
+    steps_per_epoch = math.ceil(
+        len(train_loader) / config.gradient_accumulation_steps
+    )
+    total_steps = steps_per_epoch * config.epochs
+    scheduler = build_scheduler(optimizer, total_steps, config.warmup_fraction)
+
+    # EMA
+    ema: ModelEMA | None = None
+    if config.ema_enabled:
+        ema = ModelEMA(model, decay=config.ema_decay)
+
+    # Monitoring
+    monitor = TrainingMonitor(output_dir)
+
+    # Resume state
+    start_epoch = 0
+    global_step = 0
+    best_val_loss = float("inf")
+    best_epoch = 0
+    early_stop_counter = 0
     history: list[dict[str, float]] = []
-    for epoch in range(config.epochs):
-        train_loss = run_epoch(model, train_loader, optimizer, device)
-        val_loss = run_epoch(model, val_loader, None, device)
-        history.append({"epoch": epoch + 1, "train_loss": train_loss, "val_loss": val_loss})
 
+    if args.resume_from:
+        ckpt = load_full_checkpoint(args.resume_from)
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if "scheduler_state_dict" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        start_epoch = ckpt["epoch"]
+        global_step = ckpt["global_step"]
+        best_val_loss = ckpt["best_val_metric"]
+        best_epoch = ckpt["best_epoch"]
+        history = ckpt.get("history", [])
+        if ema is not None and "ema_state_dict" in ckpt:
+            ema.load_state_dict(ckpt["ema_state_dict"])
+        if "rng_states" in ckpt:
+            restore_rng_states(ckpt["rng_states"])
+        # Recompute early stop counter from history
+        for entry in reversed(history):
+            if entry.get("val_loss", float("inf")) <= best_val_loss:
+                break
+            early_stop_counter += 1
+        print(f"Resumed from {args.resume_from} at epoch {start_epoch}")
+
+    # Training loop
+    for epoch in range(start_epoch, config.epochs):
+        epoch_num = epoch + 1
+        epoch_start = time.monotonic()
+
+        monitor.on_epoch_start(epoch_num, config.epochs)
+
+        train_loss, steps = run_epoch(
+            model,
+            train_loader,
+            optimizer,
+            device,
+            scheduler=scheduler,
+            max_grad_norm=config.max_grad_norm,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
+            huber_delta=config.huber_delta,
+            ema=ema,
+        )
+        global_step += steps
+
+        val_loss, _ = run_epoch(model, val_loader, None, device, huber_delta=config.huber_delta)
+
+        epoch_duration = time.monotonic() - epoch_start
+        remaining_epochs = config.epochs - epoch_num
+        eta_sec = epoch_duration * remaining_epochs
+
+        # Track best
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_epoch = epoch_num
+            early_stop_counter = 0
+            save_full_checkpoint(
+                output_dir / "best.pt",
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                epoch=epoch_num,
+                global_step=global_step,
+                best_val_metric=best_val_loss,
+                best_epoch=best_epoch,
+                history=history,
+                config=config.to_dict(),
+                ema_state_dict=ema.state_dict() if ema is not None else None,
+            )
+            monitor.on_checkpoint_saved(str(output_dir / "best.pt"), reason="best")
+        else:
+            early_stop_counter += 1
+
+        # Record history
+        current_lr = scheduler.get_last_lr()[0] if hasattr(scheduler, "get_last_lr") else config.learning_rate
+        history.append({
+            "epoch": epoch_num,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "learning_rate": current_lr,
+        })
+
+        # Monitor
+        monitor.on_epoch_end(
+            epoch=epoch_num,
+            total_epochs=config.epochs,
+            global_step=global_step,
+            total_steps_estimate=total_steps,
+            train_loss=train_loss,
+            val_loss=val_loss,
+            best_val_loss=best_val_loss,
+            best_epoch=best_epoch,
+            learning_rate=current_lr,
+            early_stop_counter=early_stop_counter,
+            patience=config.patience,
+            epoch_duration_sec=epoch_duration,
+            eta_sec=eta_sec,
+        )
+
+        # Save latest checkpoint every epoch
+        save_full_checkpoint(
+            output_dir / "latest.pt",
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epoch=epoch_num,
+            global_step=global_step,
+            best_val_metric=best_val_loss,
+            best_epoch=best_epoch,
+            history=history,
+            config=config.to_dict(),
+            ema_state_dict=ema.state_dict() if ema is not None else None,
+        )
+        monitor.on_checkpoint_saved(str(output_dir / "latest.pt"), reason="periodic")
+
+        # Early stopping
+        if early_stop_counter >= config.patience:
+            monitor.on_early_stop(epoch_num, best_epoch, best_val_loss)
+            break
+    else:
+        monitor.on_training_complete(config.epochs, best_epoch, best_val_loss)
+
+    # Save final artifacts
     save_json(output_dir / "config.json", config.to_dict())
     save_json(
         output_dir / "stats.json",
@@ -78,13 +258,6 @@ def main() -> None:
         },
     )
     save_json(output_dir / "history.json", {"history": history})
-    save_checkpoint(
-        output_dir / "checkpoint.pt",
-        {
-            "model_state_dict": model.state_dict(),
-            "config": config.to_dict(),
-        },
-    )
 
 
 if __name__ == "__main__":

@@ -1,22 +1,16 @@
+from __future__ import annotations
+
 from dataclasses import asdict, dataclass, field
 
 
 @dataclass(slots=True)
 class BaselineConfig:
+    # Data pipeline
     window_size: int = 256
     stride: int = 128
     onset_tolerance_sec: float = 0.03
     local_density_neighbor_k: int = 8
     register_boundaries: tuple[int, int, int] = (48, 60, 72)
-    d_model: int = 256
-    n_heads: int = 8
-    ffn_dim: int = 1024
-    num_layers: int = 4
-    dropout: float = 0.1
-    learning_rate: float = 1e-4
-    batch_size: int = 16
-    epochs: int = 10
-    seed: int = 42
     time_scale: float = 1.0
     continuous_features: tuple[str, ...] = field(
         default_factory=lambda: (
@@ -28,6 +22,35 @@ class BaselineConfig:
             "same_onset_chord_size",
         )
     )
+
+    # Model architecture
+    d_model: int = 256
+    n_heads: int = 8
+    ffn_dim: int = 1024
+    num_layers: int = 4
+    dropout: float = 0.1
+
+    # Training
+    learning_rate: float = 3e-4
+    weight_decay: float = 0.01
+    batch_size: int = 64
+    epochs: int = 100
+    seed: int = 42
+    max_grad_norm: float = 1.0
+    warmup_fraction: float = 0.05
+    patience: int = 10
+    huber_delta: float = 1.0
+    gradient_accumulation_steps: int = 1
+    ema_decay: float = 0.999
+    ema_enabled: bool = True
+
+    # Checkpoint / resume
+    resume_from: str | None = None
+
+    # Controllable velocity inference
+    enable_controls: bool = False
+    control_dims: int = 3
+    stochastic_head: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
