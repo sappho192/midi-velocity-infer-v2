@@ -48,10 +48,15 @@ class BaselineConfig:
     # Checkpoint / resume
     resume_from: str | None = None
 
+    # Output head
+    head_type: str = "regression"  # "regression", "classification", "stochastic"
+    num_velocity_bins: int = 128
+    label_smoothing: float = 0.1
+
     # Controllable velocity inference
     enable_controls: bool = False
     control_dims: int = 3
-    stochastic_head: bool = False
+    stochastic_head: bool = False  # deprecated, use head_type="stochastic"
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

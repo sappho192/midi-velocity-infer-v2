@@ -27,6 +27,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--time-scale", type=float, default=1.0)
     parser.add_argument("--no-ema", action="store_true", help="Use training weights instead of EMA weights")
+    parser.add_argument("--decode-mode", type=str, default="expectation",
+                        choices=["expectation", "argmax"],
+                        help="Decoding mode for classification head")
     return parser.parse_args()
 
 
@@ -51,7 +54,13 @@ def main() -> None:
         velocity_max=float(stats_payload["velocity_max"]),
     )
     checkpoint = load_checkpoint(args.checkpoint)
-    config = BaselineConfig(time_scale=args.time_scale)
+    # Restore model config from checkpoint if available
+    ckpt_config = checkpoint.get("config", {})
+    config = BaselineConfig(
+        time_scale=args.time_scale,
+        head_type=ckpt_config.get("head_type", "regression"),
+        num_velocity_bins=ckpt_config.get("num_velocity_bins", 128),
+    )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = TransformerVelocityModel(config).to(device)
     use_ema = not args.no_ema and "ema_state_dict" in checkpoint
@@ -67,15 +76,20 @@ def main() -> None:
     windows = build_windows(pieces, stats, config)
     loader = DataLoader(WindowDataset(windows), batch_size=config.batch_size, shuffle=False)
 
+    head_type = config.head_type
     predictions: list[np.ndarray] = []
     with torch.no_grad():
         for batch in loader:
-            pred = model(
+            output = model(
                 batch["pitch"].to(device),
                 batch["register_bucket"].to(device),
                 batch["continuous"].to(device),
                 batch["padding_mask"].to(device),
             )
+            if head_type == "classification":
+                pred = model.head.to_scalar(output, mode=args.decode_mode)
+            else:
+                pred = output
             predictions.extend(pred.cpu().numpy())
 
     reconstructed = reconstruct_center_priority(windows, predictions)

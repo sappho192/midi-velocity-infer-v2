@@ -21,7 +21,15 @@ Last updated: 2026-03-14
 - [x] V-shaped loss weighting (He et al. 2025 inspired)
   - `w = 1 + β|v - 0.5|` — 극단 velocity에 더 큰 가중치
   - 기본값 `β=3.0`, CLI `--velocity-weight-beta`로 조절 가능
-  - 결과: SD ratio 56.4% → 64.2% (평균 회귀 완화), MAE/RMSE 유지
+- [x] Classification cross-entropy loss
+  - `masked_cross_entropy_loss` with label smoothing + V-shaped weighting 지원
+
+### Output Heads
+- [x] **Regression** (`--head-type regression`): Linear → scalar, Huber loss
+- [x] **Classification** (`--head-type classification`): Linear → 128-bin logits, CE loss
+  - Decoding: `--decode-mode expectation` (soft) / `argmax` (sharp)
+  - `--label-smoothing` (기본 0.1)
+- [x] **Stochastic** (`--head-type stochastic`): (mu, log_sigma) 출력, Gaussian NLL
 
 ### Evaluation Metrics (He et al. 2025 체계)
 
@@ -40,30 +48,56 @@ Last updated: 2026-03-14
 
 집계: macro (piece 평균) + weighted (note 수 가중 평균) 두 방식 모두 출력.
 
-### Baseline Training Results (MAESTRO medium, 200 train / 32 val pieces)
+### Training Results (MAESTRO medium, 200 train / 32 val pieces)
+
+모든 수치는 macro 평균 (piece 단위). No-EMA = training weights 기준.
+
+#### Regression Head
 
 | Config | MAE | SD_velo | SD_ratio | SD_ae | CC | Recall(10%) | Recall(5%) |
 |--------|-----|---------|----------|-------|----|-------------|------------|
 | β=0 (EMA) | 11.82 | 10.45 | 58.1% | 9.93 | 0.577 | 62.0% | 34.5% |
 | β=0 (No EMA) | 11.50 | 11.46 | 63.6% | 9.47 | 0.577 | 62.8% | 34.9% |
 | β=3 (EMA) | 11.75 | 11.52 | 64.3% | 9.91 | 0.561 | 61.8% | 34.3% |
-| β=3 (No EMA) | 11.55 | **12.33** | **68.4%** | 9.62 | 0.572 | 62.4% | 34.6% |
+| β=3 (No EMA) | 11.55 | 12.33 | 68.4% | 9.62 | 0.572 | 62.4% | 34.6% |
+
+#### Classification Head (128-bin, β=3, label_smoothing=0.1)
+
+| Config | MAE | SD_velo | SD_ratio | SD_ae | CC | Recall(10%) | Recall(5%) |
+|--------|-----|---------|----------|-------|----|-------------|------------|
+| expectation (EMA) | 12.18 | 8.30 | 46.3% | 9.62 | 0.537 | 58.6% | 31.4% |
+| expectation (No EMA) | 11.45 | 11.18 | 62.0% | 9.57 | 0.571 | 63.0% | 34.8% |
+| **argmax (No EMA)** | 12.41 | **16.28** | **90.6%** | 11.45 | 0.530 | 59.9% | 35.1% |
 
 참고: He2025 MAESTRO test 기준 MAE=11.5, SD_velo=10.7.
 
-EMA가 best checkpoint 선정 시 training weights 기준 val_loss로 판단하므로,
-EMA weights의 최적 시점과 일치하지 않을 수 있음. 향후 EMA weights로 validation 평가하는 방식 검토 필요.
+### 발견 및 분석
 
-## Next Steps (우선순위 선택지)
+**V-shaped loss weighting (β=3)**
+- regression head에서 SD_ratio 58.1% → 68.4%로 개선, MAE 열화 미미
+- 극단 velocity 예측 능력 향상 확인
+
+**Classification head**
+- **argmax**: SD_ratio 90.6%로 다이나믹 레인지 회복에 극적 효과. MAE 12.41로 상승 (accuracy-expressiveness trade-off)
+- **expectation**: MAE 11.45 (최저)이지만 SD_ratio 62.0%로 regression과 비슷 — softmax 평균화로 인한 mean regression 재발
+- epoch 15에서 조기 종료 — 하이퍼파라미터 튜닝 여지 있음 (label_smoothing, patience, lr)
+
+**EMA 관련**
+- 모든 설정에서 No-EMA가 EMA를 상회. best checkpoint 선정이 training weights 기준 val_loss로 되어 있어 EMA weights의 최적 시점과 불일치.
+- 향후: EMA weights로 validation 평가하는 방식 검토 필요
+
+## Next Steps
 
 1. **Full MAESTRO (962 pieces) 학습** — medium이 아닌 전체 데이터로 baseline 성능 확정
-2. **Classification head** — 128-bin classification으로 평균 회귀 추가 완화. config에 `stochastic_head` 옵션 이미 존재
+2. ~~**Classification head**~~ ✅ — 128-bin classification 구현 및 초기 실험 완료
 3. ~~**Eval metric 보강**~~ ✅ — He2025 메트릭 체계 도입 완료
 4. **P0 research** — Canonical Note-Event Format 검증, v2-compatible eval contract 정리
 
 ### 향후 최적화
-- Optuna를 이용한 하이퍼파라미터 탐색 (velocity_weight_beta, learning_rate, batch_size 등)
+- Optuna를 이용한 하이퍼파라미터 탐색 (velocity_weight_beta, learning_rate, batch_size, label_smoothing 등)
   - 모델 아키텍처와 loss 설계가 안정화된 후에 실행 예정
+- Classification head 튜닝: label_smoothing, patience, argmax vs expectation 최적 조합 탐색
+- EMA validation 개선: EMA weights 기준 best checkpoint 선정
 
 ## Reference Papers
 

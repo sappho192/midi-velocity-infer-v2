@@ -44,6 +44,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--velocity-weight-beta", type=float, default=0.0,
                         help="V-shaped loss weighting strength (0=off, 3=He2025 default)")
+    parser.add_argument("--head-type", type=str, default="regression",
+                        choices=["regression", "classification", "stochastic"],
+                        help="Output head type")
+    parser.add_argument("--label-smoothing", type=float, default=0.1,
+                        help="Label smoothing for classification head")
     return parser.parse_args()
 
 
@@ -92,6 +97,8 @@ def main() -> None:
         patience=args.patience,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         velocity_weight_beta=args.velocity_weight_beta,
+        head_type=args.head_type,
+        label_smoothing=args.label_smoothing,
     )
 
     # Data preparation
@@ -188,6 +195,9 @@ def main() -> None:
             huber_delta=config.huber_delta,
             velocity_weight_beta=config.velocity_weight_beta,
             ema=ema,
+            head_type=config.head_type,
+            num_velocity_bins=config.num_velocity_bins,
+            label_smoothing=config.label_smoothing,
         )
         global_step += steps
 
@@ -195,6 +205,9 @@ def main() -> None:
             model, val_loader, None, device,
             huber_delta=config.huber_delta,
             velocity_weight_beta=config.velocity_weight_beta,
+            head_type=config.head_type,
+            num_velocity_bins=config.num_velocity_bins,
+            label_smoothing=config.label_smoothing,
         )
 
         epoch_duration = time.monotonic() - epoch_start

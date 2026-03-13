@@ -17,6 +17,44 @@ class VelocityHead(nn.Module):
         return self.layers(hidden_states).squeeze(-1)
 
 
+class ClassificationVelocityHead(nn.Module):
+    """128-bin classification head for velocity prediction.
+
+    Outputs logits over velocity bins. At inference, use argmax (sharp)
+    or expected value (soft) to obtain scalar velocity.
+    This avoids mean regression by producing peaked distributions.
+    """
+
+    def __init__(self, d_model: int, num_bins: int = 128) -> None:
+        super().__init__()
+        self.num_bins = num_bins
+        self.layers = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, num_bins),
+        )
+        # Register bin centers as buffer (normalized [0, 1])
+        centers = torch.arange(num_bins, dtype=torch.float32) / (num_bins - 1)
+        self.register_buffer("bin_centers", centers)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Returns logits [batch, seq_len, num_bins]."""
+        return self.layers(hidden_states)
+
+    def to_scalar(self, logits: torch.Tensor, mode: str = "expectation") -> torch.Tensor:
+        """Convert logits to scalar velocity (normalized [0, 1]).
+
+        Args:
+            logits: [batch, seq_len, num_bins]
+            mode: "expectation" (soft) or "argmax" (sharp)
+        """
+        if mode == "argmax":
+            return self.bin_centers[logits.argmax(dim=-1)]
+        # expectation: weighted sum of bin centers
+        probs = logits.softmax(dim=-1)
+        return (probs * self.bin_centers).sum(dim=-1)
+
+
 class StochasticVelocityHead(nn.Module):
     """Outputs (mu, log_sigma) per note for probabilistic velocity prediction.
 

@@ -7,7 +7,7 @@ from mvi_v3.config import BaselineConfig
 
 from .conditioning import ControlEmbedding
 from .embedding import NoteEmbedding
-from .heads import StochasticVelocityHead, VelocityHead
+from .heads import ClassificationVelocityHead, StochasticVelocityHead, VelocityHead
 from .position import T5RelativePositionBias
 
 
@@ -68,9 +68,12 @@ class TransformerVelocityModel(nn.Module):
             self.control_embedding = ControlEmbedding(config.control_dims, config.d_model)
 
         # Output head
-        self.stochastic_head = config.stochastic_head
-        if self.stochastic_head:
+        self.head_type = config.head_type
+        if config.head_type == "classification":
+            self.head = ClassificationVelocityHead(config.d_model, config.num_velocity_bins)
+        elif config.head_type == "stochastic" or config.stochastic_head:
             self.head = StochasticVelocityHead(config.d_model)
+            self.head_type = "stochastic"
         else:
             self.head = VelocityHead(config.d_model)
 

@@ -5,7 +5,7 @@ from collections.abc import Iterable
 import torch
 
 from .ema import ModelEMA
-from .losses import masked_huber_loss
+from .losses import masked_cross_entropy_loss, masked_huber_loss
 
 
 def run_epoch(
@@ -20,6 +20,9 @@ def run_epoch(
     huber_delta: float = 1.0,
     velocity_weight_beta: float = 0.0,
     ema: ModelEMA | None = None,
+    head_type: str = "regression",
+    num_velocity_bins: int = 128,
+    label_smoothing: float = 0.0,
 ) -> tuple[float, int]:
     """Run one training or validation epoch.
 
@@ -44,11 +47,19 @@ def run_epoch(
         padding_mask = batch["padding_mask"].to(device)
 
         with torch.set_grad_enabled(training):
-            prediction = model(pitch, register_bucket, continuous, padding_mask)
-            loss = masked_huber_loss(
-                prediction, target, padding_mask,
-                delta=huber_delta, velocity_weight_beta=velocity_weight_beta,
-            )
+            output = model(pitch, register_bucket, continuous, padding_mask)
+            if head_type == "classification":
+                loss = masked_cross_entropy_loss(
+                    output, target, padding_mask,
+                    num_bins=num_velocity_bins,
+                    label_smoothing=label_smoothing,
+                    velocity_weight_beta=velocity_weight_beta,
+                )
+            else:
+                loss = masked_huber_loss(
+                    output, target, padding_mask,
+                    delta=huber_delta, velocity_weight_beta=velocity_weight_beta,
+                )
 
             if training:
                 scaled_loss = loss / gradient_accumulation_steps
