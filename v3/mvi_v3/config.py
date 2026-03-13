@@ -33,7 +33,7 @@ class BaselineConfig:
     # Training
     learning_rate: float = 3e-4
     weight_decay: float = 0.01
-    batch_size: int = 64
+    batch_size: int = 256
     epochs: int = 100
     seed: int = 42
     max_grad_norm: float = 1.0

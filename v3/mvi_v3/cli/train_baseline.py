@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from pathlib import Path
 
 import torch
@@ -33,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--time-scale", type=float, default=1.0)
     parser.add_argument("--resume-from", type=str, default=None)
@@ -42,12 +45,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _process_single_piece(piece: list, config: BaselineConfig) -> list:
+    return add_derived_features(sort_and_reindex(piece), config)
+
+
 def prepare_pieces(path: str, config: BaselineConfig) -> list[list]:
     pieces = load_piece_directory(path, time_scale=config.time_scale)
-    prepared = []
-    for piece in pieces:
-        prepared.append(add_derived_features(sort_and_reindex(piece), config))
-    return prepared
+    if not pieces:
+        return []
+    workers = min(len(pieces), os.cpu_count() or 1)
+    fn = partial(_process_single_piece, config=config)
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        prepared = list(pool.map(fn, pieces))
+    return [p for p in prepared if p]
 
 
 def build_scheduler(
@@ -82,11 +92,17 @@ def main() -> None:
     )
 
     # Data preparation
+    print("[1/5] Loading train pieces...")
     train_pieces = prepare_pieces(args.train_dir, config)
+    print(f"       {len(train_pieces)} train pieces loaded")
+    print("[2/5] Loading val pieces...")
     val_pieces = prepare_pieces(args.val_dir, config)
+    print(f"       {len(val_pieces)} val pieces loaded")
+    print("[3/5] Computing dataset stats and building windows...")
     stats = fit_dataset_stats(train_pieces, config)
     train_windows = build_windows(train_pieces, stats, config)
     val_windows = build_windows(val_pieces, stats, config)
+    print(f"       {len(train_windows)} train windows, {len(val_windows)} val windows")
 
     train_loader = DataLoader(
         WindowDataset(train_windows), batch_size=config.batch_size, shuffle=True
@@ -97,6 +113,7 @@ def main() -> None:
 
     # Model and optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[4/5] Building model on {device}...")
     model = TransformerVelocityModel(config).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -150,6 +167,7 @@ def main() -> None:
         print(f"Resumed from {args.resume_from} at epoch {start_epoch}")
 
     # Training loop
+    print(f"[5/5] Starting training ({config.epochs} epochs, {total_steps} total steps, EMA={'on' if ema else 'off'})...")
     for epoch in range(start_epoch, config.epochs):
         epoch_num = epoch + 1
         epoch_start = time.monotonic()

@@ -1,4 +1,6 @@
 import csv
+import os
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from .events import NoteEvent
@@ -64,9 +66,14 @@ def load_piece_csv(path: str | Path, time_scale: float = 1.0) -> list[NoteEvent]
 
 def load_piece_directory(path: str | Path, time_scale: float = 1.0) -> list[list[NoteEvent]]:
     path = Path(path)
-    pieces: list[list[NoteEvent]] = []
-    for csv_path in sorted(path.glob("*.csv")):
-        piece = load_piece_csv(csv_path, time_scale=time_scale)
-        if piece:
-            pieces.append(piece)
-    return pieces
+    csv_paths = sorted(path.glob("*.csv"))
+    if not csv_paths:
+        return []
+    workers = min(len(csv_paths), os.cpu_count() or 1)
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        results = pool.map(
+            load_piece_csv,
+            csv_paths,
+            [time_scale] * len(csv_paths),
+        )
+    return [piece for piece in results if piece]
