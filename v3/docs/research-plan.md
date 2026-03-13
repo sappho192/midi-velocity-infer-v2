@@ -236,6 +236,7 @@ v3 needs a richer internal representation than the current CSV was designed to s
 3. Does self-supervised pretraining on symbolic MIDI improve downstream velocity prediction?
 4. How much musical structure can be captured without explicit beat/bar annotations if relative timing features are used?
 5. When beat/bar features are available, do they provide meaningful gains on top of relative timing features?
+6. Can semantic control parameters enable meaningful user-directed velocity inference in a co-creative setting?
 
 ## Design Principles
 
@@ -828,6 +829,10 @@ These are valuable but not required for the first milestone.
 
 Build a clean encoder-only supervised baseline without SSL.
 
+Prerequisites (must be completed before training begins):
+- fix code-plan divergences (AdamW, lr=3e-4, Huber loss, batch_size=64, epochs=100)
+- implement training infrastructure (checkpoint/resume, LR scheduler, early stopping, gradient clipping, monitoring)
+
 - implement note embedding
 - implement Transformer encoder
 - train on MAESTRO
@@ -903,20 +908,111 @@ Success criterion:
 - determine whether image-like velocity filling is better than note-sequence modeling for this task
 - evaluate whether performer conditioning improves prediction quality or stylistic fidelity
 
+### Phase 5: Controllable Velocity Inference for Creative Applications
+
+Enable user-directed velocity inference through semantic control parameters, inspired by Suh et al. CHI 2021 ("AI as Social Glue") findings on human-AI co-creation in music:
+
+- Users valued **semantic sliders** (e.g., Cococo's Conventional↔Surprising, Similar↔Different) to steer AI output
+- Users wanted **multiple alternatives** to compare and choose from
+- AI provided **psychological safety** for creative risk-taking — users experimented more freely
+- Users shifted to **producer/curator** roles — meaningful control parameters support this shift
+- Training data scope limited creative scope — users wanted style diversity
+
+**Control parameters** (scalars in `[0, 1]`):
+- `expressiveness`: flat/uniform velocity → wide dynamic range
+- `dynamics_center`: soft (pp-mp) → loud (f-ff)
+- `surprise`: conventional/predictable patterns → unexpected velocity choices
+
+**Control embedding**: MLP maps control scalars → `d_model` conditioning vector, broadcast-added to token embeddings before Transformer layers.
+
+**Oracle conditioning** (training strategy): compute control values from target velocity statistics per window:
+- velocity std → `expressiveness` (normalized to `[0, 1]` over training set)
+- velocity mean → `dynamics_center` (normalized to `[0, 1]` over training set)
+
+The model learns to associate control signals with output characteristics. At inference, the user sets desired values.
+
+**Multiple alternatives**: `StochasticVelocityHead` outputs `(mu, log_sigma)` per note. Sample N alternatives at inference. The `surprise` control scales sigma.
+
+**Phased implementation**:
+- Phase 5a: `ControlEmbedding` + deterministic head (`expressiveness`, `dynamics_center`)
+- Phase 5b: `StochasticVelocityHead` + `surprise` control + multi-alternative generation
+
+Success criterion:
+
+- varying `expressiveness` produces measurably different velocity standard deviations
+- varying `dynamics_center` shifts the output velocity distribution mean
+- users can meaningfully curate from multiple alternatives in a qualitative evaluation
+
 ## Training Configuration
 
 The following training hyperparameters are fixed for the first supervised baseline.
 
+- Target GPU: NVIDIA RTX 5060 Ti 16GB
 - Optimizer: `AdamW` with `weight_decay = 0.01`
 - Learning rate schedule: linear warmup (`5%` of total steps) followed by cosine decay
 - Peak learning rate: `3e-4`
-- Batch size: `32` windows (adjustable based on GPU memory)
+- Batch size: `64` windows
+- Gradient accumulation: configurable for effective batch sizes larger than `64`
 - Maximum epochs: `100` with early stopping (`patience = 10`, monitored on validation MAE)
 - Gradient clipping: `max_norm = 1.0`
 - Loss function: Huber loss with `delta = 1.0`
 - Dropout: `0.1`
 
+Memory estimate: the model is ~3M parameters. At batch size 64, peak VRAM usage including activations and gradients is approximately 3-4GB, well within the 16GB budget. This leaves headroom for larger batch sizes or longer windows in later phases.
+
 These settings are standard for medium-scale Transformers and should provide a stable starting point. All hyperparameters should be documented in the paper for reproducibility.
+
+## Training Infrastructure
+
+### Checkpoint and Resume
+
+Training must be resumable from any point after a crash, kill, or intentional stop.
+
+Checkpoint payload:
+- `model_state_dict`
+- `optimizer_state_dict`
+- `scheduler_state_dict`
+- `epoch` and `global_step`
+- `best_val_metric` and `best_epoch`
+- `history` (all epoch results so far)
+- `config` (full training configuration)
+- RNG states: Python `random`, NumPy, PyTorch CPU, and CUDA (if available)
+
+Resume interface: `--resume-from <path>` CLI argument restores all state and continues training seamlessly from the saved point.
+
+Atomic saves: checkpoints are written to a temporary file first, then atomically renamed to the target path. This prevents corruption if the process is killed during a write.
+
+Checkpoint policy:
+- `latest.pt`: saved every epoch (overwritten)
+- `best.pt`: saved when the validation metric improves
+
+### Monitoring for Coding Agents
+
+Training progress must be machine-readable so that coding agents (e.g., Claude Code) can monitor runs without parsing console output.
+
+**`status.json`**: atomically updated each epoch with the current training state.
+
+```json
+{
+  "state": "training|completed|early_stopped",
+  "epoch": 5, "total_epochs": 100,
+  "global_step": 1250, "total_steps_estimate": 25000,
+  "train_loss": 0.043, "val_loss": 0.039,
+  "best_val_loss": 0.039, "best_epoch": 3,
+  "learning_rate": 2.87e-4,
+  "early_stop_counter": 2, "patience": 10,
+  "epoch_duration_sec": 45.2, "eta_sec": 4294,
+  "timestamp": "2026-03-14T10:23:45+09:00"
+}
+```
+
+**`training.jsonl`**: append-only event log. Each line is a JSON object with an `event` field. Event types: `epoch_start`, `epoch_end`, `checkpoint_saved`, `early_stop`, `training_complete`.
+
+**Console output**: structured single-line format per epoch for human readability:
+
+```
+[EPOCH 5/100] train=0.043 val=0.039 lr=2.87e-4 best=0.039@3 patience=2/10
+```
 
 ## Open Questions
 
@@ -1119,10 +1215,11 @@ Expected output:
 ### Deferred
 
 - complex diffusion-based generation
-- full style-control conditioning
 - multi-task expressive rendering beyond velocity
 
 These may be valuable later, but they are not necessary to establish a strong v3 baseline.
+
+Note: full style-control conditioning has been promoted from deferred to active work as Phase 5 (Controllable Velocity Inference).
 
 ## Implementation Priorities
 
@@ -1152,3 +1249,4 @@ The expected outcome of v3 is not just a marginally better predictor, but a more
 - Zhanhao He et al., "Filling MIDI Velocity using U-Net Image Colorizer," 2025.
 - Ashish Vaswani et al., "Attention Is All You Need," 2017.
 - Cheng-Zhi Anna Huang et al., "Music Transformer," 2018.
+- Minhyang Suh, Emily Youngblom, Michael Terry, and Carrie J. Cai, "AI as Social Glue: Uncovering the Roles of Deep Generative AI during Social Music Composition," CHI 2021.
