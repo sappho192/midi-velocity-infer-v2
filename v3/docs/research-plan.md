@@ -4,6 +4,10 @@
 
 Build a more general and scalable MIDI velocity inference model than v2 by moving from a tiny seq2seq RNN with local attention to a note-level encoder architecture with stronger context modeling, better note representation, and optional self-supervised pretraining.
 
+Scope: v3 is intentionally specialized for solo piano velocity inference. Multi-instrument or ensemble scenarios are out of scope.
+
+Target venue: ISMIR. The experimental design should prioritize musical interpretation, rigorous ablation, and reproducibility over simple SOTA claims.
+
 ## Motivation
 
 The current v2 codebase is useful as a proof of concept, but it has several structural limits.
@@ -188,6 +192,31 @@ The first baseline should use only features that can be computed reliably from n
 Reasoning:
 The comparison should remain fair and useful without forcing v3 to inherit all of v2's post-processing decisions.
 
+### Default Training Loss
+
+- Options considered:
+  - MSE
+  - MAE
+  - Huber loss
+  - loss ablation in Phase 1
+- Selected:
+  - Huber loss
+
+Reasoning:
+Huber loss combines the outlier robustness of MAE with the smooth convergence of MSE near the target. It is a better default than pure MSE for velocity prediction, where the target distribution is concentrated in the mid-range and mean regression is a concern. The delta hyperparameter defaults to `1.0`.
+
+### Pitch Encoding Strategy
+
+- Options considered:
+  - 128 categorical pitch embedding
+  - octave + chroma decomposition
+  - continuous pitch representation
+- Selected:
+  - ablation item for Phase 2
+
+Reasoning:
+Octave(0-10) + chroma(0-11) decomposition offers better data efficiency (23 vs 128 embeddings) and natural encoding of harmonic equivalence across octaves. However, 128 categorical embedding is simpler and well-established. Both will be compared in Phase 2. The first baseline may use either as default.
+
 ### Canonical Event Format
 
 - Options considered:
@@ -251,6 +280,8 @@ Events within each `piece_id` should be sorted by:
 
 This ordering should be treated as the canonical sequence order for windowing and Transformer input construction.
 
+Note: within simultaneous-onset chords, pitch-ascending order implies bass-first sequencing. This is a deliberate choice for determinism. Since the encoder is bidirectional, ordering bias is less impactful than in unidirectional models. Chord-internal ordering alternatives (e.g., soprano-first) are a candidate for Phase 2 ablation.
+
 #### Derived Fields for the First Supervised Baseline
 
 The following fields do not need to be stored in the raw canonical record, but they must be generated deterministically from the canonical note events during preprocessing.
@@ -262,6 +293,8 @@ The following fields do not need to be stored in the raw canonical record, but t
 - `same_onset_chord_size`: number of notes whose onset falls within `+-30 ms` of the current note onset
 - `local_note_density`: local onset density computed from the symmetric `+-8 note` neighborhood around the current note
 - `register_bucket`: 4 coarse bins using MIDI pitch boundaries `< 48`, `48 <= pitch < 60`, `60 <= pitch < 72`, `>= 72`
+
+The `+-30 ms` chord onset tolerance is an initial default. This threshold should be validated empirically by analyzing the onset-difference distribution in MAESTRO. The `chord_onset_tolerance_ms` value should be exposed as a configurable preprocessing parameter.
 
 #### Optional Structural Fields
 
@@ -317,6 +350,10 @@ Definitions for the first supervised baseline:
 - `local_note_density`: local onset density computed from the symmetric `+-8 note` neighborhood around the current note
 - `register_bucket`: 4 coarse bins using MIDI pitch boundaries `< 48`, `48 <= pitch < 60`, `60 <= pitch < 72`, `>= 72`
 
+Candidate additional feature for Phase 2 ablation:
+
+- `local_note_density_temporal`: notes per second computed from a symmetric `+-0.5 s` time window around the current note onset. This captures temporal density independently of note-count neighborhoods and may provide complementary information to the note-count-based density, especially across varying tempi.
+
 Deferred for later validation:
 
 - `is_chord_tone`
@@ -342,7 +379,7 @@ Instead of only using pitch embedding, v3 should use a hybrid `Note Embedding`.
 - Continuous features: linear projection or small MLP
 - Final note embedding: sum or concatenation followed by projection
 
-Example:
+Example (with 128 categorical pitch embedding):
 
 ```text
 E_note =
@@ -352,6 +389,19 @@ E_note =
   + E_optional_structure
   + E_position
 ```
+
+Alternative (with octave + chroma decomposition):
+
+```text
+E_note =
+  E_octave + E_chroma
+  + E_register
+  + P(duration, IOI, delta_pitch_prev, delta_pitch_next, density, chord_size)
+  + E_optional_structure
+  + E_position
+```
+
+The octave+chroma variant uses two small embedding tables (12 chroma + 11 octave) instead of one 128-entry table, providing natural harmonic equivalence across octaves and better data efficiency for rare pitch values. Both variants will be compared in Phase 2 ablation.
 
 This allows the model to remain general while still learning musically meaningful note-level structure.
 
@@ -380,6 +430,8 @@ Later ablation candidates:
 - 6 layers with the same width
 - 4 layers with a wider hidden size
 - alternative relative bias designs
+- `Pre-Norm` vs `Post-Norm` block ordering (Post-Norm may yield better representation quality in shallow models with proper warmup)
+- onset-time-aware relative attention bias as a supplement to T5-style position bucket bias (to address the mismatch between position distance and temporal distance for simultaneous-onset chords)
 
 ### Why Encoder-Only
 
@@ -413,7 +465,8 @@ The first pretraining objective should be masked note modeling.
 
 - randomly mask selected note attributes
 - predict masked attributes from surrounding context
-- exclude velocity from the pretraining target in the first version
+- the first SSL version should experiment with both including and excluding velocity as a masking target
+- if velocity is included, use a low masking rate to let the backbone learn phrase-level velocity patterns without dominating the structural objective
 
 Candidate maskable attributes:
 
@@ -450,14 +503,18 @@ Deferred comparison heads:
 
 - classification into velocity bins plus residual regression
 
+Default training loss:
+
+- Huber loss with `delta = 1.0`
+
 Candidate losses to compare after the baseline is stable:
 
 - MAE
-- Huber loss
-- MAE plus rank-correlation auxiliary term
+- MSE
+- Huber loss plus rank-correlation auxiliary term (motivated by the same directional-dynamics objective that drove v2's cosine similarity loss, but formulated as a proper rank correlation)
 - coarse-bin cross-entropy plus residual regression loss
 
-The current `MSE + cosine similarity` loss from v2 should be treated as a legacy baseline, not the default v3 objective.
+The current `MSE + cosine similarity` loss from v2 should be treated as a legacy baseline, not the default v3 objective. However, its motivation — learning relative dynamics patterns, not just absolute velocity values — remains valid and is addressed by the rank-correlation auxiliary term planned for Phase 1 follow-up.
 
 ## Data Strategy
 
@@ -472,6 +529,15 @@ These are not part of the first milestone and require additional investigation.
 - GiantMIDI-Piano
 - other aligned symbolic piano datasets if licensing and preprocessing are manageable
 - broader symbolic MIDI corpora for SSL pretraining
+
+### Data Augmentation
+
+Piano velocity inference places strong constraints on which augmentations are safe. Pitch transposition changes the register-velocity relationship, and time stretching distorts IOI distributions. The following augmentations are adopted as safe for this task:
+
+- `velocity jittering`: add small uniform noise (e.g., `+-2` in raw velocity scale) to target velocities during training to reduce overfitting to exact values
+- `window offset jitter`: vary the window start offset by a small random amount (e.g., `+-16 notes`) each epoch so that the model does not memorize fixed window boundaries
+
+These augmentations should be combined with standard regularization: `dropout = 0.1`, `weight_decay = 0.01`, and early stopping.
 
 ### Data Windowing
 
@@ -604,6 +670,7 @@ Required rules:
 - use piece-level reconstruction as the primary evaluation unit
 - when overlap creates multiple predictions for the same note, use the prediction whose note position is closest to the center of its window
 - if two predictions are equally close to window center, prefer the earlier window in canonical order
+- alternative: soft weighting based on center distance (e.g., triangular or Gaussian weight) to blend predictions from multiple windows. This is a candidate for ablation in Phase 2, as it may reduce boundary discontinuities compared to hard selection
 
 The first baseline does not use window-level averaged metrics as its primary benchmark.
 
@@ -628,8 +695,34 @@ The first v3 milestone should use objective metrics only.
 - MSE
 - Spearman correlation
 - Pearson correlation
-- predicted velocity standard deviation vs. target standard deviation
+- predicted velocity standard deviation vs. target standard deviation (primary variance collapse diagnostic)
 - calibration plots and distribution matching
+
+#### Metric Reporting Units
+
+Metrics should be reported at two levels:
+
+- **Global metrics** (primary): computed over the entire test set. These are the main comparison numbers.
+- **Per-piece metrics** (secondary): computed per piece, then reported as mean ± std. Per-piece correlation and MAE distributions provide insight into model consistency across pieces of varying difficulty and style.
+
+Both levels should be reported in the paper. Per-piece distributions visualized as boxplots are recommended for ISMIR.
+
+#### Variance Collapse Monitoring
+
+The ratio of predicted velocity standard deviation to target velocity standard deviation should be tracked as a mandatory training diagnostic. If this ratio drops significantly below `1.0`, it indicates mean regression. In that case, the following interventions should be considered in order:
+
+1. Switch from Huber to MAE loss
+2. Add rank-correlation auxiliary loss
+3. Consider distributional modeling (e.g., beta distribution head)
+
+#### Qualitative Analysis Plan
+
+The following qualitative analyses should be included in the paper:
+
+- **Velocity contour visualization**: overlay predicted vs. target velocity profiles for selected pieces, showing phrase-level dynamics
+- **Error analysis by musical context**: breakdown of prediction error by register (bass/mid/treble), dynamics range (pp/mp/mf/f/ff), chord vs. single note, and passage density
+- **Attention pattern visualization**: selected attention heads to illustrate what musical relationships the model learns
+- **Per-piece error distribution**: identify pieces with unusually high or low error and analyze common characteristics
 
 ### v2-Compatible Evaluation Contract
 
@@ -725,8 +818,9 @@ These are valuable but not required for the first milestone.
 - v2 attention baseline
 - v3 Transformer supervised baseline
 - v3 Transformer with balanced note embedding ablations
+- cross-ablation: v3 architecture with v2 features, v2 architecture with v3 features, v2 architecture with v3 window size
 - later: v3 pretrained Transformer fine-tuned on velocity
-- later: optional U-Net or piano-roll model inspired by `midi-velocity-colorizer`
+- later: optional U-Net or piano-roll model inspired by `midi-velocity-colorizer` (treated as related work in the first paper, experimental comparison deferred to Phase 4)
 
 ## Experimental Roadmap
 
@@ -739,23 +833,42 @@ Build a clean encoder-only supervised baseline without SSL.
 - train on MAESTRO
 - compare against v2
 
-Success criterion:
+Success criterion (multi-dimensional):
 
 - clear gain over v2 in MAE and correlation metrics
-- improved velocity variance matching
+- improved velocity variance matching (predicted std / target std ratio closer to `1.0`)
+- both conditions must be met simultaneously — MAE improvement with variance collapse is not considered a success
 
-### Phase 2: Feature Ablations
+### Phase 2: Feature and Architecture Ablations
 
-Test which note representation choices matter most.
+Test which note representation and architecture choices matter most.
+
+Feature ablations:
 
 - pitch only
 - pitch plus relative timing
 - balanced note embedding
 - balanced note embedding plus optional beat/bar features
 
+Architecture and encoding ablations:
+
+- 128 categorical pitch embedding vs. octave + chroma decomposition
+- Pre-Norm vs. Post-Norm Transformer blocks
+- T5 position bias only vs. T5 position bias + onset-time-aware bias
+- center-preference overlap resolution vs. soft-weighted blending
+- chord-internal ordering: pitch-ascending (bass-first) vs. alternatives
+- `local_note_density` note-count-based vs. time-based vs. both
+
+Cross-ablation (for disentangling contribution sources):
+
+- v3 Transformer with v2 feature set (isolates architecture contribution)
+- v2 architecture with v3 feature set (isolates feature contribution)
+- v2 architecture with v3 window size (isolates context length contribution)
+
 Success criterion:
 
 - identify a minimal robust feature set
+- clearly attribute performance gains to architecture, features, and context length
 
 ### Phase 3: Self-Supervised Pretraining
 
@@ -770,17 +883,40 @@ Success criterion:
 - improved sample efficiency
 - improved generalization or stability
 
-### Phase 4: Architecture Expansion
+### Phase 4: Architecture Expansion and Conditioning
 
-Compare symbolic sequence modeling against structured alternatives.
+Compare symbolic sequence modeling against structured alternatives, and explore conditioning mechanisms.
+
+Architecture comparisons:
 
 - local/global Transformer variants
 - hybrid CNN/Transformer
-- U-Net-style piano-roll formulation
+- U-Net-style piano-roll formulation (comparison with `midi-velocity-colorizer`, treated as related work in Phase 1 paper and as experimental comparison in Phase 4)
+
+Conditioning experiments:
+
+- performer embedding or style token conditioning using MAESTRO performer metadata
+- this may help address the "average style" convergence problem inherent in performer-agnostic models
 
 Success criterion:
 
 - determine whether image-like velocity filling is better than note-sequence modeling for this task
+- evaluate whether performer conditioning improves prediction quality or stylistic fidelity
+
+## Training Configuration
+
+The following training hyperparameters are fixed for the first supervised baseline.
+
+- Optimizer: `AdamW` with `weight_decay = 0.01`
+- Learning rate schedule: linear warmup (`5%` of total steps) followed by cosine decay
+- Peak learning rate: `3e-4`
+- Batch size: `32` windows (adjustable based on GPU memory)
+- Maximum epochs: `100` with early stopping (`patience = 10`, monitored on validation MAE)
+- Gradient clipping: `max_norm = 1.0`
+- Loss function: Huber loss with `delta = 1.0`
+- Dropout: `0.1`
+
+These settings are standard for medium-scale Transformers and should provide a stable starting point. All hyperparameters should be documented in the paper for reproducibility.
 
 ## Open Questions
 
@@ -790,14 +926,18 @@ The following baseline choices are now fixed:
 
 - medium-scale encoder-only Transformer
 - 4 layers, `d_model = 256`, `n_heads = 8`, `ffn_dim = 1024`, `dropout = 0.1`
-- `Pre-Norm` Transformer blocks
-- `T5-style` relative position bucket bias
+- `Pre-Norm` Transformer blocks (with Post-Norm as Phase 2 ablation)
+- `T5-style` relative position bucket bias (with time-aware bias as Phase 2 ablation)
 - global `0..1` velocity normalization with raw-scale reporting
 - `256-note` window with `stride 128`
+- Huber loss with `delta = 1.0`
 - timestamp-based derived features only
-- `same_onset_chord_size` with `+-30 ms` onset tolerance
+- `same_onset_chord_size` with `+-30 ms` onset tolerance (to be validated empirically)
 - `local_note_density` from a symmetric `+-8 note` neighborhood
 - 4-bin `register_bucket` with boundaries `48/60/72`
+- pitch encoding: both 128 categorical and octave+chroma will be tested in Phase 2
+- data augmentation: velocity jittering and window offset jitter
+- training: AdamW, warmup + cosine decay, early stopping
 
 Any further uncertainty for v3 now falls under `Required Research Before Expansion`, not baseline-defining open questions.
 
@@ -996,13 +1136,15 @@ These may be valuable later, but they are not necessary to establish a strong v3
 
 ## Expected Outcome
 
-The expected outcome of v3 is not just a marginally better predictor, but a more general research platform with the following properties.
+The expected outcome of v3 is not just a marginally better predictor, but a more general research platform for solo piano velocity inference with the following properties.
 
 - works without mandatory beat/bar annotations
 - uses a musically richer note representation
 - scales to longer context
 - supports pretraining and fine-tuning
 - provides a stronger comparison point against recent related work
+- includes rigorous ablation to attribute improvements to specific design choices (architecture, features, context length)
+- supports both quantitative evaluation and qualitative musical analysis suitable for ISMIR publication
 
 ## References
 
