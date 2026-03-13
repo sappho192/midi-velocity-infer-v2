@@ -12,7 +12,7 @@ from mvi_v3.data.features import add_derived_features, sort_and_reindex
 from mvi_v3.data.ingest import load_piece_directory
 from mvi_v3.data.normalize import denormalize_velocity
 from mvi_v3.data.windowing import build_windows
-from mvi_v3.eval.metrics import compute_regression_metrics
+from mvi_v3.eval.metrics import aggregate_metrics, compute_piece_metrics
 from mvi_v3.eval.reconstruct import reconstruct_center_priority
 from mvi_v3.io.artifacts import load_json, save_json
 from mvi_v3.models.transformer import TransformerVelocityModel
@@ -84,14 +84,32 @@ def main() -> None:
         for piece in pieces
         if piece
     }
-    metrics = {
-        piece_id: compute_regression_metrics(
+    piece_metrics = {
+        piece_id: compute_piece_metrics(
             [denormalize_velocity(value, stats) for value in values],
             targets[piece_id],
         )
         for piece_id, values in reconstructed.items()
     }
-    save_json(output_dir / "metrics.json", metrics)
+    agg = aggregate_metrics(piece_metrics)
+    save_json(output_dir / "metrics.json", {
+        "aggregate": agg,
+        "per_piece": piece_metrics,
+    })
+
+    # Print summary
+    print(f"\n{'='*60}")
+    print(f"Evaluation Results ({agg['n_pieces']} pieces, {agg['n_notes']} notes)")
+    print(f"{'='*60}")
+    print(f"  MAE:        {agg['weighted_mae']:.2f}  (macro {agg['macro_mae']:.2f})")
+    print(f"  MSE:        {agg['weighted_mse']:.2f}  (macro {agg['macro_mse']:.2f})")
+    print(f"  SD_velo:    {agg['weighted_pred_std']:.2f}  (true: {agg['weighted_true_std']:.2f})")
+    print(f"  SD_ratio:   {agg['weighted_sd_ratio']:.1%}")
+    print(f"  SD_ae:      {agg['weighted_sd_ae']:.2f}")
+    print(f"  CC:         {agg['weighted_cc']:.4f}")
+    print(f"  Recall(10%): {agg['weighted_recall_10']:.1%}")
+    print(f"  Recall(5%):  {agg['weighted_recall_5']:.1%}")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
