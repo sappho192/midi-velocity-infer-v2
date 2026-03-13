@@ -40,6 +40,7 @@ class BaselineConfig:
     warmup_fraction: float = 0.05
     patience: int = 10
     huber_delta: float = 1.0
+    velocity_weight_beta: float = 3.0
     gradient_accumulation_steps: int = 1
     ema_decay: float = 0.999
     ema_enabled: bool = True

@@ -17,9 +17,15 @@ def masked_huber_loss(
     target: torch.Tensor,
     padding_mask: torch.Tensor,
     delta: float = 1.0,
+    velocity_weight_beta: float = 0.0,
 ) -> torch.Tensor:
     valid = ~padding_mask
     loss = F.huber_loss(prediction, target, reduction="none", delta=delta)
+    if velocity_weight_beta > 0:
+        # V-shaped weighting: upweight extreme velocities (near 0 and 1)
+        # Inspired by He et al. 2025: w = 1 + beta * |v - 0.5|
+        weight = 1.0 + velocity_weight_beta * (target - 0.5).abs()
+        loss = loss * weight
     return loss[valid].mean()
 
 

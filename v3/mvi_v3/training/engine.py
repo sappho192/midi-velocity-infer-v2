@@ -18,6 +18,7 @@ def run_epoch(
     max_grad_norm: float = 0.0,
     gradient_accumulation_steps: int = 1,
     huber_delta: float = 1.0,
+    velocity_weight_beta: float = 0.0,
     ema: ModelEMA | None = None,
 ) -> tuple[float, int]:
     """Run one training or validation epoch.
@@ -44,7 +45,10 @@ def run_epoch(
 
         with torch.set_grad_enabled(training):
             prediction = model(pitch, register_bucket, continuous, padding_mask)
-            loss = masked_huber_loss(prediction, target, padding_mask, delta=huber_delta)
+            loss = masked_huber_loss(
+                prediction, target, padding_mask,
+                delta=huber_delta, velocity_weight_beta=velocity_weight_beta,
+            )
 
             if training:
                 scaled_loss = loss / gradient_accumulation_steps

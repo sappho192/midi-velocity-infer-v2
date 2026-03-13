@@ -42,6 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume-from", type=str, default=None)
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
+    parser.add_argument("--velocity-weight-beta", type=float, default=0.0,
+                        help="V-shaped loss weighting strength (0=off, 3=He2025 default)")
     return parser.parse_args()
 
 
@@ -89,6 +91,7 @@ def main() -> None:
         time_scale=args.time_scale,
         patience=args.patience,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        velocity_weight_beta=args.velocity_weight_beta,
     )
 
     # Data preparation
@@ -183,11 +186,16 @@ def main() -> None:
             max_grad_norm=config.max_grad_norm,
             gradient_accumulation_steps=config.gradient_accumulation_steps,
             huber_delta=config.huber_delta,
+            velocity_weight_beta=config.velocity_weight_beta,
             ema=ema,
         )
         global_step += steps
 
-        val_loss, _ = run_epoch(model, val_loader, None, device, huber_delta=config.huber_delta)
+        val_loss, _ = run_epoch(
+            model, val_loader, None, device,
+            huber_delta=config.huber_delta,
+            velocity_weight_beta=config.velocity_weight_beta,
+        )
 
         epoch_duration = time.monotonic() - epoch_start
         remaining_epochs = config.epochs - epoch_num
