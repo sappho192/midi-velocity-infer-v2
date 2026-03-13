@@ -957,6 +957,9 @@ The following training hyperparameters are fixed for the first supervised baseli
 - Gradient clipping: `max_norm = 1.0`
 - Loss function: Huber loss with `delta = 1.0`
 - Dropout: `0.1`
+- EMA decay: `0.999` with warmup (`decay = min(0.999, 1 - 1/(step+1))`)
+  - EMA weights used as default for evaluation and inference
+  - Checkpoint stores both training and EMA weights
 
 Memory estimate: the model is ~3M parameters. At batch size 64, peak VRAM usage including activations and gradients is approximately 3-4GB, well within the 16GB budget. This leaves headroom for larger batch sizes or longer windows in later phases.
 
