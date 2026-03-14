@@ -118,19 +118,60 @@ Last updated: 2026-03-14
 - 표현력 우선: classification + argmax (SD_ratio 94.9%, Recall(5%) 42.4%)
 - 균형: regression β=3 (MAE 10.09, SD_ratio 84.7%, 모든 메트릭에서 안정적)
 
+### Test Set Results (177 pieces)
+
+MAESTRO test split, weighted 평균 (note 수 가중). β=3 for all v3 models.
+
+#### v3 Regression Head (β=3)
+
+| Config | MAE | MSE | SD_velo | SD_ratio | SD_ae | CC | Recall(10%) | Recall(5%) |
+|--------|-----|-----|---------|----------|-------|----|-------------|------------|
+| No EMA | 26.58 | 969.77 | 6.10 | 35.0% | 15.41 | 0.1510 | 23.6% | 11.6% |
+| EMA | 27.63 | 1033.57 | 5.84 | 33.5% | 15.59 | 0.1487 | 21.7% | 10.5% |
+
+#### v3 Classification Head (128-bin, β=3, label_smoothing=0.1)
+
+| Config | MAE | MSE | SD_velo | SD_ratio | SD_ae | CC | Recall(10%) | Recall(5%) |
+|--------|-----|-----|---------|----------|-------|----|-------------|------------|
+| expectation (No EMA) | 23.43 | 764.68 | 4.19 | 24.0% | 13.90 | 0.2493 | 28.4% | 14.4% |
+| argmax (No EMA) | 34.30 | 1470.20 | 4.38 | 25.0% | 16.31 | 0.1795 | 12.2% | 5.5% |
+
+#### v2 Baseline (Seq2Seq + Luong Attention)
+
+| Config | MAE | MSE | SD_velo | SD_ratio | SD_ae | CC | Recall(10%) | Recall(5%) |
+|--------|-----|-----|---------|----------|-------|----|-------------|------------|
+| v2 (ONNX) | 13.87 | 302.32 | 6.34 | 36.1% | 10.25 | 0.3439 | 52.4% | 28.5% |
+
+#### Test vs Validation Gap 분석
+
+| Model | Val MAE | Test MAE | Gap | Val SD_ratio | Test SD_ratio |
+|-------|---------|----------|-----|--------------|---------------|
+| v3 Reg NoEMA | 10.09 | 26.58 | +163% | 84.7% | 35.0% |
+| v3 Cls Exp | 9.91 | 23.43 | +136% | 74.7% | 24.0% |
+| v2 | — | 13.87 | — | — | 36.1% |
+
+**심각한 과적합 문제 확인**:
+- v3 모델은 validation → test에서 MAE 2.4~2.6배 증가, SD_ratio 절반 이하로 하락
+- v2가 v3보다 test set에서 모든 메트릭에서 우수 (MAE 13.87 vs 23.43, CC 0.34 vs 0.25, Recall10% 52.4% vs 28.4%)
+- Validation set 기준 결과 (MAE 9.91)는 He2025 대비 우수했으나, test set 일반화에 실패
+- 원인 가설: (1) 학습 데이터와 val/test의 분포 차이, (2) transformer 모델의 과적합 경향, (3) piece-level windowing에서의 정보 누수 가능성
+
 ## Next Steps
 
 1. ~~**Full MAESTRO 학습**~~ ✅ — regression + classification 모두 완료
 2. ~~**Classification head**~~ ✅ — 128-bin classification 구현 및 실험 완료
 3. ~~**Eval metric 보강**~~ ✅ — He2025 메트릭 체계 도입 완료
-4. **P0 research** — Canonical Note-Event Format 검증, v2-compatible eval contract 정리
+4. ~~**Test set 평가 + v2 비교**~~ ✅ — 과적합 문제 확인
+5. **P0: 과적합 해결** — test set 일반화 성능 확보가 최우선 과제
+6. **P0 research** — Canonical Note-Event Format 검증, v2-compatible eval contract 정리
 
-### 향후 최적화
-- Optuna를 이용한 하이퍼파라미터 탐색 (velocity_weight_beta, learning_rate, batch_size, label_smoothing 등)
-  - 모델 아키텍처와 loss 설계가 안정화된 후에 실행 예정
-- Classification head 튜닝: label_smoothing, patience, argmax vs expectation 최적 조합 탐색
-- EMA validation 개선: EMA weights 기준 best checkpoint 선정
-- Test set 평가: 현재 모든 결과는 validation set 기준, 최종 보고용 test set 평가 필요
+### 과적합 해결 방안 후보
+- Dropout 강화 / weight decay 조정
+- Data augmentation (tempo/velocity scaling, 곡 분할 등)
+- Train/val/test split 분포 분석 — MAESTRO 공식 split의 특성 확인
+- 모델 크기 축소 (layer 수, hidden dim)
+- Regularization: mixup, label smoothing 강화
+- Cross-validation으로 과적합 정도 재확인
 
 ## Reference Papers
 

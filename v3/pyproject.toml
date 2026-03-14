@@ -16,6 +16,11 @@ dependencies = [
 mvi-v3-train = "mvi_v3.cli.train_baseline:main"
 mvi-v3-eval = "mvi_v3.cli.eval_baseline:main"
 
+[project.optional-dependencies]
+v2-eval = [
+  "onnxruntime>=1.17",
+]
+
 [dependency-groups]
 dev = [
   "pytest>=8.2",
