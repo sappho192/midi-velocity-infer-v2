@@ -112,9 +112,11 @@ def main() -> None:
             w.oracle_controls = np.array(presets[label], dtype=np.float32)
         print(f"  Preset mode: {len(presets)} presets, assigned to {len(windows)} windows")
     elif enable_controls and control_mode == "default":
-        # Set oracle_controls to None → ControlEmbedding uses learned default
+        # Use [0.5, 0.5] as default control params (mid-range of normalized space)
+        # Note: learned default_controls may be untrained if oracle was always provided
+        default_ctrl = np.array([0.5] * config.control_dims, dtype=np.float32)
         for w in windows:
-            w.oracle_controls = None
+            w.oracle_controls = default_ctrl
 
     loader = DataLoader(
         WindowDataset(windows, config=config, training=False),
