@@ -230,6 +230,43 @@ Best val loss: 0.0056 @ epoch 88 (vs scratch 0.0061 @ 80, **8% 개선**).
 - **Default MAE 14.60이 v2(13.87)에 근접**, SD_ratio(96.1%)와 CC(0.617)는 v2를 크게 상회
 - 모든 메트릭에서 일관된 개선 — backbone representation 학습이 일반화에 기여
 
+### Control Preset v2: Regression + Sweep K + Soft Ensemble
+
+기존 HDBSCAN K=3 preset (MAE 11.68)의 3가지 병목 해결: discretization loss, classifier 정확도, 클러스터 불균형.
+
+**구현**: `build_presets.py`에 `--method` 인자 추가 (classify/regress/sweep), `eval_baseline.py`에 regression/soft_preset control mode 추가.
+
+#### Control-level 결과 (Build)
+
+| Method | Val Control MAE |
+|--------|----------------|
+| **Regression (RF)** | **0.0671** |
+| KMeans K=10 (best sweep) | 0.0781 |
+| KMeans K=7 | 0.0794 |
+| KMeans K=5 | 0.0802 |
+| KMeans K=3 | 0.0830 |
+
+#### Test Set 결과 (177 pieces, 741,410 notes)
+
+| Mode | MAE | MSE | CC | SD_ratio | Recall(10%) | Recall(5%) | Gap Closure |
+|------|-----|-----|----|----------|-------------|------------|-------------|
+| Oracle | 7.94 | 116.70 | 0.7970 | 91.9% | 81.2% | 52.1% | 100% |
+| **Regression** | **9.81** | **169.10** | **0.7170** | **85.3%** | **72.1%** | **42.9%** | **71.9%** |
+| Soft preset (sweep K=10) | 10.15 | 181.12 | 0.7011 | 88.0% | 70.6% | 41.7% | 66.8% |
+| Preset (sweep K=10) | 10.61 | 196.58 | 0.6823 | 90.9% | 68.5% | 40.0% | 59.9% |
+| Soft preset (K=3) | 11.18 | 207.44 | 0.6630 | 76.2% | 65.0% | 36.5% | 51.4% |
+| Preset (HDBSCAN K=3) | 11.68 | — | — | — | — | — | 43.8% |
+| Default [0.5,0.5] | 14.60 | 342.57 | 0.6173 | 96.1% | 52.0% | 28.0% | 0% |
+
+**핵심 발견**:
+- **Regression이 압도적 1위**: discretization loss 제거가 가장 큰 단일 개선 요인
+- KMeans가 HDBSCAN보다 균형적 (K=3: max 35.7% vs 83%)
+- Soft ensemble이 hard assignment 대비 일관 개선 (K=10: 10.61→10.15)
+- K 증가 시 ceiling은 낮아지나 classifier accuracy도 하락 → regression이 이 tradeoff를 근본적으로 해결
+- **Regression을 기본 control inference 방법으로 채택**
+
+잔여 gap (9.81 vs 7.94 = 1.87): 21-dim features의 information ceiling (velocity 미포함) + train→test generalization gap.
+
 ## Next Steps
 
 1. ~~**Full MAESTRO 학습**~~ ✅ — regression + classification 모두 완료
@@ -238,7 +275,7 @@ Best val loss: 0.0056 @ epoch 88 (vs scratch 0.0061 @ 80, **8% 개선**).
 4. ~~**Test set 평가 + v2 비교**~~ ✅ — 과적합 문제 확인
 5. ~~**Phase 5a: Oracle-conditioned controls**~~ ✅ — val-test gap 대폭 개선, MAE 8.30 (oracle)
 6. ~~**SSL pretraining pipeline**~~ ✅ — MNM on GiantMIDI-Piano → MAESTRO fine-tune 완료
-7. **P0: Default control 최적화** — default [0.5, 0.5] 대신 test set 평균에 가까운 control 탐색, 또는 control 없는 regression head로 SSL fine-tune
+7. ~~**Control preset v2**~~ ✅ — Regression 채택, MAE 11.68→9.81, gap closure 71.9%
 8. **P1: Ablation** — pretrained vs scratch, regularization 조합 비교
 9. **P2: SSL 확장** — pretrain epoch 수 증가, mask ratio 탐색, larger model
 

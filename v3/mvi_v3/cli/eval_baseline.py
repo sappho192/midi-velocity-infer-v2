@@ -32,10 +32,10 @@ def parse_args() -> argparse.Namespace:
                         choices=["expectation", "argmax"],
                         help="Decoding mode for classification head")
     parser.add_argument("--control-mode", type=str, default=None,
-                        choices=["oracle", "default", "preset"],
-                        help="Control mode: oracle (ground truth), default (learned default), preset (auto-selected)")
+                        choices=["oracle", "default", "preset", "regression", "soft_preset"],
+                        help="Control mode: oracle/default/preset/regression/soft_preset")
     parser.add_argument("--preset-dir", type=str, default=None,
-                        help="Directory containing presets.json + classifier.joblib (required for --control-mode preset)")
+                        help="Directory containing presets/classifier/regressor artifacts")
     return parser.parse_args()
 
 
@@ -111,6 +111,36 @@ def main() -> None:
         for w, label in zip(windows, labels):
             w.oracle_controls = np.array(presets[label], dtype=np.float32)
         print(f"  Preset mode: {len(presets)} presets, assigned to {len(windows)} windows")
+    elif enable_controls and control_mode == "regression":
+        # Direct regression: 21-dim features → continuous controls
+        if not args.preset_dir:
+            raise ValueError("--preset-dir is required for --control-mode regression")
+        import joblib
+        preset_dir = Path(args.preset_dir)
+        regressor = joblib.load(preset_dir / "control_regressor.joblib")
+        features = np.stack([extract_window_features(w) for w in windows])
+        predicted = np.clip(regressor.predict(features), 0.0, 1.0)
+        for w, ctrl in zip(windows, predicted):
+            w.oracle_controls = ctrl.astype(np.float32)
+        print(f"  Regression mode: predicted controls for {len(windows)} windows")
+    elif enable_controls and control_mode == "soft_preset":
+        # Soft ensemble: top-2 weighted blending from classifier probabilities
+        if not args.preset_dir:
+            raise ValueError("--preset-dir is required for --control-mode soft_preset")
+        import joblib
+        preset_dir = Path(args.preset_dir)
+        preset_data = load_json(str(preset_dir / "presets.json"))
+        presets = preset_data["presets"]
+        clf = joblib.load(preset_dir / "classifier.joblib")
+        features = np.stack([extract_window_features(w) for w in windows])
+        proba = clf.predict_proba(features)  # [N, K]
+        centroid_array = np.array(presets)
+        for w, p in zip(windows, proba):
+            top2 = np.argsort(p)[-2:][::-1]
+            weights = p[top2] / p[top2].sum()
+            blended = weights[0] * centroid_array[top2[0]] + weights[1] * centroid_array[top2[1]]
+            w.oracle_controls = np.clip(blended, 0.0, 1.0).astype(np.float32)
+        print(f"  Soft preset mode: {len(presets)} presets, blended for {len(windows)} windows")
     elif enable_controls and control_mode == "default":
         # Use [0.5, 0.5] as default control params (mid-range of normalized space)
         # Note: learned default_controls may be untrained if oracle was always provided
