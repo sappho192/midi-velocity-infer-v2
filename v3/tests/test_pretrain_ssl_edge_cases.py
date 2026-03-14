@@ -27,6 +27,7 @@ def _window(all_padding: bool) -> WindowRecord:
         target_velocity=target_velocity,
         padding_mask=padding_mask,
         global_note_indices=global_note_indices,
+        oracle_controls=None,
     )
 
 
@@ -54,7 +55,7 @@ def test_pretrain_engine_handles_zero_masked_positions_without_crash():
     assert total == 0.0
     assert pitch == 0.0
     assert cont == 0.0
-    assert steps == 0
+    assert steps == 1
 
 
 def test_mask_ratio_validation():
