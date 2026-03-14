@@ -71,7 +71,7 @@ def run_pretrain_epoch(
 
             loss = pitch_weight * pitch_loss + continuous_weight * cont_loss
 
-            if training and n_masked > 0:
+            if training:
                 scaled_loss = loss / gradient_accumulation_steps
                 scaled_loss.backward()
 
@@ -96,7 +96,6 @@ def run_pretrain_epoch(
         training
         and optimizer is not None
         and total_batches % gradient_accumulation_steps != 0
-        and any(p.grad is not None for p in model.parameters())
     ):
         if max_grad_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
