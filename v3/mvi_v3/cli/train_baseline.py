@@ -73,6 +73,9 @@ def parse_args() -> argparse.Namespace:
                         help="Fraction of notes to mask for aux reconstruction (0=off)")
     parser.add_argument("--aux-loss-weight", type=float, default=0.1,
                         help="Weight of auxiliary reconstruction loss")
+    # SSL pretrained backbone
+    parser.add_argument("--pretrained-backbone", type=str, default=None,
+                        help="Path to pretrained backbone checkpoint (backbone.pt from SSL)")
     return parser.parse_args()
 
 
@@ -172,6 +175,16 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[4/5] Building model on {device}...")
     model = TransformerVelocityModel(config).to(device)
+
+    # Load pretrained backbone if provided
+    if args.pretrained_backbone:
+        ckpt = torch.load(args.pretrained_backbone, map_location="cpu", weights_only=False)
+        missing, unexpected = model.load_state_dict(ckpt["backbone_state_dict"], strict=False)
+        print(f"       Loaded pretrained backbone from {args.pretrained_backbone}")
+        print(f"       missing={len(missing)} (head weights), unexpected={len(unexpected)}")
+        if unexpected:
+            print(f"       WARNING unexpected keys: {unexpected}")
+
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
