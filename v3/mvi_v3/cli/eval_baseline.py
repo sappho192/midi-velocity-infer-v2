@@ -11,6 +11,7 @@ from mvi_v3.data.events import DatasetStats
 from mvi_v3.data.features import add_derived_features, sort_and_reindex
 from mvi_v3.data.ingest import load_piece_directory
 from mvi_v3.data.normalize import denormalize_velocity
+from mvi_v3.data.preset_features import extract_window_features
 from mvi_v3.data.windowing import build_windows, normalize_oracle_controls
 from mvi_v3.eval.metrics import aggregate_metrics, compute_piece_metrics
 from mvi_v3.eval.reconstruct import reconstruct_center_priority
@@ -30,6 +31,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decode-mode", type=str, default="expectation",
                         choices=["expectation", "argmax"],
                         help="Decoding mode for classification head")
+    parser.add_argument("--control-mode", type=str, default=None,
+                        choices=["oracle", "default", "preset"],
+                        help="Control mode: oracle (ground truth), default (learned default), preset (auto-selected)")
+    parser.add_argument("--preset-dir", type=str, default=None,
+                        help="Directory containing presets.json + classifier.joblib (required for --control-mode preset)")
     return parser.parse_args()
 
 
@@ -82,9 +88,33 @@ def main() -> None:
     pieces = prepare_pieces(args.data_dir, config)
     windows = build_windows(pieces, stats, config)
 
-    # Normalize oracle controls for test set using training stats
-    if enable_controls and stats.oracle_mins:
-        normalize_oracle_controls(windows, stats.oracle_mins, stats.oracle_maxs)
+    # Determine control mode
+    control_mode = args.control_mode
+    if control_mode is None:
+        control_mode = "oracle" if enable_controls else None
+
+    if enable_controls and control_mode == "oracle":
+        # Normalize oracle controls for test set using training stats
+        if stats.oracle_mins:
+            normalize_oracle_controls(windows, stats.oracle_mins, stats.oracle_maxs)
+    elif enable_controls and control_mode == "preset":
+        # Load presets + classifier, predict preset for each window
+        if not args.preset_dir:
+            raise ValueError("--preset-dir is required for --control-mode preset")
+        import joblib
+        preset_dir = Path(args.preset_dir)
+        preset_data = load_json(str(preset_dir / "presets.json"))
+        presets = preset_data["presets"]
+        clf = joblib.load(preset_dir / "classifier.joblib")
+        features = np.stack([extract_window_features(w) for w in windows])
+        labels = clf.predict(features)
+        for w, label in zip(windows, labels):
+            w.oracle_controls = np.array(presets[label], dtype=np.float32)
+        print(f"  Preset mode: {len(presets)} presets, assigned to {len(windows)} windows")
+    elif enable_controls and control_mode == "default":
+        # Set oracle_controls to None → ControlEmbedding uses learned default
+        for w in windows:
+            w.oracle_controls = None
 
     loader = DataLoader(
         WindowDataset(windows, config=config, training=False),
@@ -138,7 +168,7 @@ def main() -> None:
     print(f"\n{'='*60}")
     print(f"Evaluation Results ({agg['n_pieces']} pieces, {agg['n_notes']} notes)")
     if enable_controls:
-        print(f"  [Oracle-conditioned evaluation]")
+        print(f"  [Control mode: {control_mode}]")
     print(f"{'='*60}")
     print(f"  MAE:        {agg['weighted_mae']:.2f}  (macro {agg['macro_mae']:.2f})")
     print(f"  MSE:        {agg['weighted_mse']:.2f}  (macro {agg['macro_mse']:.2f})")

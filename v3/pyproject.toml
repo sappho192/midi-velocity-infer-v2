@@ -24,6 +24,10 @@ v2-eval = [
 ssl = [
   "pretty-midi>=0.2.10",
 ]
+preset = [
+  "scikit-learn>=1.3",
+  "joblib>=1.3",
+]
 
 [dependency-groups]
 dev = [
