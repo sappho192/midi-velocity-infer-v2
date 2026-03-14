@@ -55,7 +55,7 @@ def run_pretrain_epoch(
             n_masked = int(mnm_mask.sum().item())
             if n_masked == 0:
                 # Rare edge case (all-padding window). Keep graph-connected zero loss.
-                zero = pitch_logits.sum() * 0.0
+                zero = (pitch_logits.sum() + cont_pred.sum()) * 0.0
                 pitch_loss = zero
                 cont_loss = zero
             else:
@@ -71,7 +71,7 @@ def run_pretrain_epoch(
 
             loss = pitch_weight * pitch_loss + continuous_weight * cont_loss
 
-            if training:
+            if training and n_masked > 0:
                 scaled_loss = loss / gradient_accumulation_steps
                 scaled_loss.backward()
 
@@ -92,7 +92,12 @@ def run_pretrain_epoch(
         total_batches += 1
 
     # Handle remaining accumulated gradients
-    if training and optimizer is not None and total_batches % gradient_accumulation_steps != 0:
+    if (
+        training
+        and optimizer is not None
+        and total_batches % gradient_accumulation_steps != 0
+        and any(p.grad is not None for p in model.parameters())
+    ):
         if max_grad_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         optimizer.step()

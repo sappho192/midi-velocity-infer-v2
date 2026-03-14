@@ -22,8 +22,8 @@ class PretrainWindowDataset(Dataset[dict[str, torch.Tensor]]):
     ) -> None:
         self.windows = windows
         self.config = config or BaselineConfig()
-        if not 0.0 <= mask_ratio <= 1.0:
-            raise ValueError(f"mask_ratio must be in [0, 1], got {mask_ratio}")
+        if not 0.0 < mask_ratio <= 1.0:
+            raise ValueError(f"mask_ratio must be in (0, 1], got {mask_ratio}")
         self.mask_ratio = mask_ratio
 
     def __len__(self) -> int:

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from mvi_v3.config import BaselineConfig
@@ -53,14 +54,12 @@ def test_pretrain_engine_handles_zero_masked_positions_without_crash():
     assert total == 0.0
     assert pitch == 0.0
     assert cont == 0.0
-    assert steps == 1
+    assert steps == 0
 
 
 def test_mask_ratio_validation():
     cfg = BaselineConfig()
-    try:
+    with pytest.raises(ValueError, match="mask_ratio"):
+        PretrainWindowDataset([_window(all_padding=False)], config=cfg, mask_ratio=0.0)
+    with pytest.raises(ValueError, match="mask_ratio"):
         PretrainWindowDataset([_window(all_padding=False)], config=cfg, mask_ratio=1.5)
-    except ValueError as exc:
-        assert "mask_ratio" in str(exc)
-    else:
-        raise AssertionError("Expected ValueError for invalid mask_ratio")
