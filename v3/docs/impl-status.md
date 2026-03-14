@@ -142,19 +142,60 @@ MAESTRO test split, weighted 평균 (note 수 가중). β=3 for all v3 models.
 |--------|-----|-----|---------|----------|-------|----|-------------|------------|
 | v2 (ONNX) | 13.87 | 302.32 | 6.34 | 36.1% | 10.25 | 0.3439 | 52.4% | 28.5% |
 
+#### Phase 5a: Oracle-Conditioned Controllable Inference
+
+Regression head, `enable_controls=True`, `control_dims=2`, `dropout=0.2`, `embedding_dropout=0.1`, `vel_jitter=±2.0`, `patience=15`.
+962 train / 137 val pieces, 43,727 / 4,929 windows. Best val loss: 0.0061 @ epoch 80 (early stopped @ 95).
+
+| Config | MAE | MSE | SD_velo | SD_ratio | SD_ae | CC | Recall(10%) | Recall(5%) |
+|--------|-----|-----|---------|----------|-------|----|-------------|------------|
+| Oracle [GT] (EMA) | **8.30** | 126.74 | 16.00 | 89.7% | 7.46 | **0.7766** | **79.4%** | **50.4%** |
+| Default [0.5, 0.5] (EMA) | 15.41 | 378.76 | 16.40 | 94.5% | 11.47 | 0.5781 | 49.4% | 26.4% |
+
+**분석**:
+- Oracle-conditioned MAE 8.30은 전체 최저 — ground truth control 제공 시 높은 표현력
+- Default controls MAE 15.41: v2(13.87)보다 약간 높지만 CC(0.5781)와 SD_ratio(94.5%)는 크게 우수
+- **Val-test gap 대폭 개선**: val MAE ~7.8 → test MAE 8.30 (oracle), 15.41 (default). 이전 v3의 136-163% gap 대비 극적 축소
+- Regularization 조합 (dropout 0.2 + embedding_dropout 0.1 + velocity_jitter ±2.0)이 과적합 억제에 효과적
+
 #### Test vs Validation Gap 분석
 
 | Model | Val MAE | Test MAE | Gap | Val SD_ratio | Test SD_ratio |
 |-------|---------|----------|-----|--------------|---------------|
 | v3 Reg NoEMA | 10.09 | 26.58 | +163% | 84.7% | 35.0% |
 | v3 Cls Exp | 9.91 | 23.43 | +136% | 74.7% | 24.0% |
+| **Phase 5a Oracle** | ~7.8 | **8.30** | **+6%** | — | **89.7%** |
+| **Phase 5a Default** | ~7.8 | **15.41** | +97% | — | **94.5%** |
 | v2 | — | 13.87 | — | — | 36.1% |
 
-**심각한 과적합 문제 확인**:
+**과적합 개선 진전**:
+- Phase 5a oracle: val-test gap +6% — 사실상 과적합 해소 (단, oracle control이 piece-specific 정보 제공)
+- Phase 5a default: val-test gap +97% — 이전 v3(136-163%)보다 개선되었으나 여전히 과적합 존재
+- Regularization만으로는 불충분 → SSL pretraining (GiantMIDI-Piano)으로 backbone representation 강화 필요
+
+**심각한 과적합 문제 확인** (Phase 1-4):
 - v3 모델은 validation → test에서 MAE 2.4~2.6배 증가, SD_ratio 절반 이하로 하락
 - v2가 v3보다 test set에서 모든 메트릭에서 우수 (MAE 13.87 vs 23.43, CC 0.34 vs 0.25, Recall10% 52.4% vs 28.4%)
 - Validation set 기준 결과 (MAE 9.91)는 He2025 대비 우수했으나, test set 일반화에 실패
 - 원인 가설: (1) 학습 데이터와 val/test의 분포 차이, (2) transformer 모델의 과적합 경향, (3) piece-level windowing에서의 정보 누수 가능성
+
+### SSL Pretraining Pipeline (구현 완료, 실험 대기)
+
+Masked Note Modeling (MNM) — GiantMIDI-Piano (~10K곡)에서 backbone representation 학습 후 MAESTRO fine-tune.
+
+**구현 파일**:
+- `scripts/convert_giantmidi_to_csv.py` — MIDI→CSV 변환기 (metadata TSV 파싱, 병렬 처리)
+- `mvi_v3/models/pretrain_model.py` — PretrainModel (backbone + learnable mask_embedding + pitch/continuous heads)
+- `mvi_v3/data/pretrain_dataset.py` — MNM 마스킹 dataset (15% mask ratio)
+- `mvi_v3/training/pretrain_engine.py` — SSL 훈련 엔진 (pitch CE + continuous MSE)
+- `mvi_v3/cli/pretrain_ssl.py` — SSL pretraining CLI
+- `mvi_v3/cli/train_baseline.py` — `--pretrained-backbone` 인자 추가
+
+**설계**:
+- Window 내 15% note를 마스킹, learnable mask vector로 교체
+- Pitch prediction (128-class CE) + continuous feature reconstruction (6-dim MSE)
+- Backbone key 이름이 `TransformerVelocityModel`과 동일 → `load_state_dict(strict=False)`로 직접 전이
+- 검증 완료: 57 backbone keys 전이, missing=4 (velocity head only), unexpected=0
 
 ## Next Steps
 
@@ -162,16 +203,11 @@ MAESTRO test split, weighted 평균 (note 수 가중). β=3 for all v3 models.
 2. ~~**Classification head**~~ ✅ — 128-bin classification 구현 및 실험 완료
 3. ~~**Eval metric 보강**~~ ✅ — He2025 메트릭 체계 도입 완료
 4. ~~**Test set 평가 + v2 비교**~~ ✅ — 과적합 문제 확인
-5. **P0: 과적합 해결** — test set 일반화 성능 확보가 최우선 과제
-6. **P0 research** — Canonical Note-Event Format 검증, v2-compatible eval contract 정리
-
-### 과적합 해결 방안 후보
-- Dropout 강화 / weight decay 조정
-- Data augmentation (tempo/velocity scaling, 곡 분할 등)
-- Train/val/test split 분포 분석 — MAESTRO 공식 split의 특성 확인
-- 모델 크기 축소 (layer 수, hidden dim)
-- Regularization: mixup, label smoothing 강화
-- Cross-validation으로 과적합 정도 재확인
+5. ~~**Phase 5a: Oracle-conditioned controls**~~ ✅ — val-test gap 대폭 개선, MAE 8.30 (oracle)
+6. ~~**SSL pretraining pipeline 구현**~~ ✅ — MNM on GiantMIDI-Piano 파이프라인 완성
+7. **P0: SSL pretrain 실험** — GiantMIDI CSV 변환 → pretrain → MAESTRO fine-tune → test eval
+8. **P1: Default control 최적화** — default [0.5, 0.5] 대신 test set 평균에 가까운 control 탐색
+9. **P2: Ablation** — pretrained vs scratch, oracle vs default, regularization 조합 비교
 
 ## Reference Papers
 
