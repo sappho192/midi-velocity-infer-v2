@@ -76,6 +76,11 @@ def parse_args() -> argparse.Namespace:
     # SSL pretrained backbone
     parser.add_argument("--pretrained-backbone", type=str, default=None,
                         help="Path to pretrained backbone checkpoint (backbone.pt from SSL)")
+    # Weights & Biases
+    parser.add_argument("--wandb-project", type=str, default=None,
+                        help="W&B project name (None=disabled)")
+    parser.add_argument("--wandb-run-name", type=str, default=None,
+                        help="W&B run name")
     return parser.parse_args()
 
 
@@ -205,6 +210,16 @@ def main() -> None:
 
     # Monitoring
     monitor = TrainingMonitor(output_dir)
+
+    # wandb init
+    wandb_run = None
+    if args.wandb_project:
+        import wandb
+        wandb_run = wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_run_name,
+            config=config.to_dict(),
+        )
 
     # Resume state
     start_epoch = 0
@@ -339,6 +354,16 @@ def main() -> None:
             eta_sec=eta_sec,
         )
 
+        if wandb_run is not None:
+            wandb_run.log({
+                "epoch": epoch_num,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "learning_rate": current_lr,
+                "best_val_loss": best_val_loss,
+                "early_stop_counter": early_stop_counter,
+            }, step=epoch_num)
+
         # Save latest checkpoint every epoch
         save_full_checkpoint(
             output_dir / "latest.pt",
@@ -361,6 +386,9 @@ def main() -> None:
             break
     else:
         monitor.on_training_complete(config.epochs, best_epoch, best_val_loss)
+
+    if wandb_run is not None:
+        wandb_run.finish()
 
     # Save final artifacts
     save_json(output_dir / "config.json", config.to_dict())
