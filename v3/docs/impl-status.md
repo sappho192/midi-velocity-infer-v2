@@ -179,9 +179,9 @@ Regression head, `enable_controls=True`, `control_dims=2`, `dropout=0.2`, `embed
 - Validation set 기준 결과 (MAE 9.91)는 He2025 대비 우수했으나, test set 일반화에 실패
 - 원인 가설: (1) 학습 데이터와 val/test의 분포 차이, (2) transformer 모델의 과적합 경향, (3) piece-level windowing에서의 정보 누수 가능성
 
-### SSL Pretraining Pipeline (구현 완료, 실험 대기)
+### SSL Pretraining + Fine-tune (GiantMIDI-Piano → MAESTRO)
 
-Masked Note Modeling (MNM) — GiantMIDI-Piano (~10K곡)에서 backbone representation 학습 후 MAESTRO fine-tune.
+Masked Note Modeling (MNM) — GiantMIDI-Piano (5,959 train / 3,206 val pieces)에서 backbone representation 학습 후 MAESTRO fine-tune.
 
 **구현 파일**:
 - `scripts/convert_giantmidi_to_csv.py` — MIDI→CSV 변환기 (metadata TSV 파싱, 병렬 처리)
@@ -195,7 +195,40 @@ Masked Note Modeling (MNM) — GiantMIDI-Piano (~10K곡)에서 backbone represen
 - Window 내 15% note를 마스킹, learnable mask vector로 교체
 - Pitch prediction (128-class CE) + continuous feature reconstruction (6-dim MSE)
 - Backbone key 이름이 `TransformerVelocityModel`과 동일 → `load_state_dict(strict=False)`로 직접 전이
-- 검증 완료: 57 backbone keys 전이, missing=4 (velocity head only), unexpected=0
+- 57 backbone keys 전이, missing=9 (velocity head + control weights), unexpected=0
+
+**성능 최적화**:
+- `add_derived_features`의 chord_size 계산을 O(n^2) → O(n log n) (bisect) — 115K note 곡: 수 시간 → 0.18초
+- 순차 로딩 + piece별 windowing 후 즉시 해제로 메모리 사용량 최적화 (30GB RAM 환경에서 안정 실행)
+
+#### SSL Pretrain 결과 (50 epochs, ~220분)
+
+178,013 train / 74,309 val windows. Best val loss: 0.2288 @ epoch 47.
+
+| Loss | Train | Val |
+|------|-------|-----|
+| Total | 0.2597 | 0.2288 |
+| Pitch CE | 0.0897 | 0.0708 |
+| Continuous MSE | 0.1701 | 0.1574 |
+
+#### SSL Fine-tune Test 결과
+
+Phase 5a와 동일 설정 (`dropout=0.2, emb_drop=0.1, vel_jitter=±2.0, controls=2d`).
+Best val loss: 0.0056 @ epoch 88 (vs scratch 0.0061 @ 80, **8% 개선**).
+
+| Config | MAE | MSE | SD_velo | SD_ratio | SD_ae | CC | Recall(10%) | Recall(5%) |
+|--------|-----|-----|---------|----------|-------|----|-------------|------------|
+| **SSL Oracle** | **7.94** | 116.70 | 16.37 | 91.9% | 7.18 | **0.7970** | **81.2%** | **52.1%** |
+| **SSL Default [0.5,0.5]** | **14.60** | 342.57 | 16.71 | **96.1%** | 10.98 | **0.6173** | **52.0%** | **28.0%** |
+| Scratch Oracle | 8.30 | 126.74 | 16.00 | 89.7% | 7.46 | 0.7766 | 79.4% | 50.4% |
+| Scratch Default | 15.41 | 378.76 | 16.40 | 94.5% | 11.47 | 0.5781 | 49.4% | 26.4% |
+| v2 Baseline | 13.87 | 302.32 | 6.34 | 36.1% | 10.25 | 0.3439 | 52.4% | 28.5% |
+
+**SSL pretraining 효과**:
+- Oracle: MAE 8.30→**7.94** (-4.3%), CC 0.777→**0.797** (+2.6%)
+- Default: MAE 15.41→**14.60** (-5.3%), CC 0.578→**0.617** (+6.8%)
+- **Default MAE 14.60이 v2(13.87)에 근접**, SD_ratio(96.1%)와 CC(0.617)는 v2를 크게 상회
+- 모든 메트릭에서 일관된 개선 — backbone representation 학습이 일반화에 기여
 
 ## Next Steps
 
@@ -204,10 +237,10 @@ Masked Note Modeling (MNM) — GiantMIDI-Piano (~10K곡)에서 backbone represen
 3. ~~**Eval metric 보강**~~ ✅ — He2025 메트릭 체계 도입 완료
 4. ~~**Test set 평가 + v2 비교**~~ ✅ — 과적합 문제 확인
 5. ~~**Phase 5a: Oracle-conditioned controls**~~ ✅ — val-test gap 대폭 개선, MAE 8.30 (oracle)
-6. ~~**SSL pretraining pipeline 구현**~~ ✅ — MNM on GiantMIDI-Piano 파이프라인 완성
-7. **P0: SSL pretrain 실험** — GiantMIDI CSV 변환 → pretrain → MAESTRO fine-tune → test eval
-8. **P1: Default control 최적화** — default [0.5, 0.5] 대신 test set 평균에 가까운 control 탐색
-9. **P2: Ablation** — pretrained vs scratch, oracle vs default, regularization 조합 비교
+6. ~~**SSL pretraining pipeline**~~ ✅ — MNM on GiantMIDI-Piano → MAESTRO fine-tune 완료
+7. **P0: Default control 최적화** — default [0.5, 0.5] 대신 test set 평균에 가까운 control 탐색, 또는 control 없는 regression head로 SSL fine-tune
+8. **P1: Ablation** — pretrained vs scratch, regularization 조합 비교
+9. **P2: SSL 확장** — pretrain epoch 수 증가, mask ratio 탐색, larger model
 
 ## Reference Papers
 

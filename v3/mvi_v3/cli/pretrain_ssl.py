@@ -10,16 +10,19 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import gc
 import math
 import time
 from pathlib import Path
 
 import torch
-from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 from mvi_v3.config import BaselineConfig
 from mvi_v3.data.pretrain_dataset import PretrainWindowDataset
+from mvi_v3.data.events import DatasetStats, NoteEvent, WindowRecord
+from mvi_v3.data.features import add_derived_features, sort_and_reindex
+from mvi_v3.data.ingest import load_piece_csv
 from mvi_v3.data.normalize import fit_dataset_stats
 from mvi_v3.data.windowing import build_windows
 from mvi_v3.io.artifacts import save_json
@@ -29,7 +32,45 @@ from mvi_v3.training.ema import ModelEMA
 from mvi_v3.training.pretrain_engine import run_pretrain_epoch
 
 # Reuse from train_baseline
-from mvi_v3.cli.train_baseline import build_scheduler, prepare_pieces
+from mvi_v3.cli.train_baseline import build_scheduler
+
+
+def load_pieces_and_build_windows(
+    path: str,
+    config: BaselineConfig,
+    stats: DatasetStats | None = None,
+) -> tuple[list[list[NoteEvent]] | None, list[WindowRecord]]:
+    """Load pieces sequentially, optionally build windows piece-by-piece.
+
+    If stats is None, returns (pieces, []) for stats fitting.
+    If stats is provided, returns (None, windows) — pieces are freed after windowing.
+    """
+    csv_paths = sorted(Path(path).glob("*.csv"))
+    if not csv_paths:
+        return ([] if stats is None else None), []
+
+    if stats is None:
+        # First pass: need to keep pieces for stats fitting
+        pieces: list[list[NoteEvent]] = []
+        for i, csv_path in enumerate(csv_paths, 1):
+            piece = load_piece_csv(csv_path)
+            if piece:
+                pieces.append(add_derived_features(sort_and_reindex(piece), config))
+            if i % 500 == 0:
+                print(f"       ... {i}/{len(csv_paths)} pieces loaded")
+        return pieces, []
+    else:
+        # Second pass (or val): build windows per-piece, free piece immediately
+        all_windows: list[WindowRecord] = []
+        for i, csv_path in enumerate(csv_paths, 1):
+            piece = load_piece_csv(csv_path)
+            if piece:
+                processed = add_derived_features(sort_and_reindex(piece), config)
+                windows = build_windows([processed], stats, config)
+                all_windows.extend(windows)
+            if i % 500 == 0:
+                print(f"       ... {i}/{len(csv_paths)} pieces processed ({len(all_windows)} windows)")
+        return None, all_windows
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,22 +109,25 @@ def main() -> None:
         weight_decay=args.weight_decay,
     )
 
-    # [1/5] Load training pieces
+    # [1/5] Load training pieces (sequential, single-process to avoid fork OOM)
     print(f"[1/5] Loading train pieces from {args.train_dir}...")
-    train_pieces = prepare_pieces(args.train_dir, config)
+    train_pieces, _ = load_pieces_and_build_windows(args.train_dir, config, stats=None)
     print(f"       {len(train_pieces)} train pieces loaded")
 
-    # [2/5] Load validation pieces
-    print(f"[2/5] Loading val pieces from {args.val_dir}...")
-    val_pieces = prepare_pieces(args.val_dir, config)
-    print(f"       {len(val_pieces)} val pieces loaded")
-
-    # [3/5] Compute stats and build windows
-    print("[3/5] Computing dataset stats and building windows...")
+    # [2/5] Compute stats, then build windows piece-by-piece and free pieces
+    print("[2/5] Computing dataset stats...")
     stats = fit_dataset_stats(train_pieces, config)
-    train_windows = build_windows(train_pieces, stats, config)
-    val_windows = build_windows(val_pieces, stats, config)
-    print(f"       {len(train_windows)} train windows, {len(val_windows)} val windows")
+    del train_pieces
+    gc.collect()
+
+    # [3/5] Build windows (re-reads CSVs, but frees each piece after windowing)
+    print("[3/5] Building train windows (streaming)...")
+    _, train_windows = load_pieces_and_build_windows(args.train_dir, config, stats=stats)
+    print(f"       {len(train_windows)} train windows")
+
+    print("       Building val windows (streaming)...")
+    _, val_windows = load_pieces_and_build_windows(args.val_dir, config, stats=stats)
+    print(f"       {len(val_windows)} val windows")
 
     # Save pretrain stats for reference
     stats_payload = {

@@ -1,3 +1,4 @@
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 
 from mvi_v3.config import BaselineConfig
@@ -41,6 +42,9 @@ def add_derived_features(events: Sequence[NoteEvent], config: BaselineConfig) ->
     tol = config.onset_tolerance_sec
     neighbor_k = config.local_density_neighbor_k
 
+    # Pre-extract onset times for O(log n) chord_size via bisect
+    onsets = [e.onset_sec for e in events]
+
     for idx, event in enumerate(events):
         prev_event = events[idx - 1] if idx > 0 else None
         next_event = events[idx + 1] if idx + 1 < n_events else None
@@ -49,9 +53,10 @@ def add_derived_features(events: Sequence[NoteEvent], config: BaselineConfig) ->
         span = events[right].onset_sec - events[left].onset_sec
         count = right - left + 1
         density = count / span if span > 0 else float(count)
-        chord_size = sum(
-            1 for other in events if abs(other.onset_sec - event.onset_sec) <= tol
-        )
+        # O(log n) chord size using sorted onset times + bisect
+        lo = bisect_left(onsets, event.onset_sec - tol)
+        hi = bisect_right(onsets, event.onset_sec + tol)
+        chord_size = hi - lo
 
         result.append(
             NoteEvent(
