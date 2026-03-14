@@ -55,8 +55,20 @@ class BaselineConfig:
 
     # Controllable velocity inference
     enable_controls: bool = False
-    control_dims: int = 3
+    control_dims: int = 2  # 2 for oracle-only (expressiveness, dynamics_center), 3 adds surprise
     stochastic_head: bool = False  # deprecated, use head_type="stochastic"
+
+    # Data augmentation
+    augment_velocity_jitter: float = 0.0  # ±jitter uniform noise on target velocity (raw 0-127 scale)
+    augment_stride_jitter: int = 0  # ±jitter random offset on window stride
+    augment_tempo_range: tuple[float, float] = (1.0, 1.0)  # timing feature scale range
+
+    # Regularization
+    embedding_dropout: float = 0.0  # dropout after note embedding (0=off)
+
+    # Masked attribute regularization (Phase 3)
+    mask_ratio: float = 0.0  # fraction of notes to mask (0=off)
+    aux_loss_weight: float = 0.1  # weight of auxiliary reconstruction loss
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

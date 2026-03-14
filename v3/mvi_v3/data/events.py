@@ -31,6 +31,7 @@ class WindowRecord:
     target_velocity: np.ndarray
     padding_mask: np.ndarray
     global_note_indices: np.ndarray
+    oracle_controls: np.ndarray | None = None  # [n_controls] per-window control params
 
 
 @dataclass(slots=True)
@@ -39,6 +40,8 @@ class DatasetStats:
     feature_stds: dict[str, float] = field(default_factory=dict)
     velocity_min: float = 0.0
     velocity_max: float = 127.0
+    oracle_mins: list[float] = field(default_factory=list)  # per-control min for normalization
+    oracle_maxs: list[float] = field(default_factory=list)  # per-control max for normalization
 
 
 @dataclass(slots=True)

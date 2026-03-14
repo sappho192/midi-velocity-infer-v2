@@ -62,8 +62,12 @@ class TransformerVelocityModel(nn.Module):
         )
         self.output_norm = nn.LayerNorm(config.d_model)
 
+        # Embedding dropout (regularization)
+        self.embedding_dropout = nn.Dropout(config.embedding_dropout) if config.embedding_dropout > 0 else None
+
         # Controllable velocity inference
         self.enable_controls = config.enable_controls
+        self.control_dims = config.control_dims
         if self.enable_controls:
             self.control_embedding = ControlEmbedding(config.control_dims, config.d_model)
 
@@ -77,6 +81,16 @@ class TransformerVelocityModel(nn.Module):
         else:
             self.head = VelocityHead(config.d_model)
 
+        # Auxiliary reconstruction head for masked attribute regularization (Phase 3)
+        self.has_aux_head = config.mask_ratio > 0
+        if self.has_aux_head:
+            n_continuous = len(config.continuous_features)
+            self.aux_head = nn.Sequential(
+                nn.Linear(config.d_model, config.d_model),
+                nn.GELU(),
+                nn.Linear(config.d_model, n_continuous),
+            )
+
     def forward(
         self,
         pitch: torch.Tensor,
@@ -87,11 +101,64 @@ class TransformerVelocityModel(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         x = self.embedding(pitch, register_bucket, continuous)
 
+        if self.embedding_dropout is not None:
+            x = self.embedding_dropout(x)
+
         if self.enable_controls:
+            # For stochastic head with 3+ control dims, extract surprise (dim 2)
+            surprise = None
+            ctrl_for_embedding = control_params
+            if self.head_type == "stochastic" and control_params is not None and self.control_dims >= 3:
+                surprise = control_params[:, 2:3]  # [batch, 1]
+            x = x + self.control_embedding(ctrl_for_embedding, x.shape[0])
+
+        bias = self.position_bias(x.shape[1], x.device)
+        for layer in self.layers:
+            x = layer(x, padding_mask, bias)
+        x = self.output_norm(x)
+
+        # Stochastic head with surprise routing
+        if self.head_type == "stochastic" and self.enable_controls:
+            return self.head(x, surprise=surprise)
+
+        return self.head(x)
+
+    def forward_with_aux(
+        self,
+        pitch: torch.Tensor,
+        register_bucket: torch.Tensor,
+        continuous: torch.Tensor,
+        padding_mask: torch.Tensor,
+        control_params: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor | tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+        """Forward pass that also returns auxiliary reconstruction predictions.
+
+        Returns (main_output, aux_reconstruction) where aux_reconstruction
+        is [batch, seq_len, n_continuous] predicting the original features.
+        """
+        x = self.embedding(pitch, register_bucket, continuous)
+
+        if self.embedding_dropout is not None:
+            x = self.embedding_dropout(x)
+
+        if self.enable_controls:
+            surprise = None
+            if self.head_type == "stochastic" and control_params is not None and self.control_dims >= 3:
+                surprise = control_params[:, 2:3]
             x = x + self.control_embedding(control_params, x.shape[0])
 
         bias = self.position_bias(x.shape[1], x.device)
         for layer in self.layers:
             x = layer(x, padding_mask, bias)
         x = self.output_norm(x)
-        return self.head(x)
+
+        # Auxiliary reconstruction from transformer output
+        aux_recon = self.aux_head(x)
+
+        # Main output
+        if self.head_type == "stochastic" and self.enable_controls:
+            main_output = self.head(x, surprise=surprise)
+        else:
+            main_output = self.head(x)
+
+        return main_output, aux_recon

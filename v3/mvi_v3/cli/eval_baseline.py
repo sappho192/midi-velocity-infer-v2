@@ -11,7 +11,7 @@ from mvi_v3.data.events import DatasetStats
 from mvi_v3.data.features import add_derived_features, sort_and_reindex
 from mvi_v3.data.ingest import load_piece_directory
 from mvi_v3.data.normalize import denormalize_velocity
-from mvi_v3.data.windowing import build_windows
+from mvi_v3.data.windowing import build_windows, normalize_oracle_controls
 from mvi_v3.eval.metrics import aggregate_metrics, compute_piece_metrics
 from mvi_v3.eval.reconstruct import reconstruct_center_priority
 from mvi_v3.io.artifacts import load_json, save_json
@@ -52,14 +52,21 @@ def main() -> None:
         feature_stds={k: float(v) for k, v in stats_payload["feature_stds"].items()},
         velocity_min=float(stats_payload["velocity_min"]),
         velocity_max=float(stats_payload["velocity_max"]),
+        oracle_mins=stats_payload.get("oracle_mins", []),
+        oracle_maxs=stats_payload.get("oracle_maxs", []),
     )
     checkpoint = load_checkpoint(args.checkpoint)
     # Restore model config from checkpoint if available
     ckpt_config = checkpoint.get("config", {})
+    enable_controls = ckpt_config.get("enable_controls", False)
     config = BaselineConfig(
         time_scale=args.time_scale,
         head_type=ckpt_config.get("head_type", "regression"),
         num_velocity_bins=ckpt_config.get("num_velocity_bins", 128),
+        enable_controls=enable_controls,
+        control_dims=ckpt_config.get("control_dims", 2),
+        embedding_dropout=ckpt_config.get("embedding_dropout", 0.0),
+        mask_ratio=0.0,  # no masking during eval
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = TransformerVelocityModel(config).to(device)
@@ -74,19 +81,35 @@ def main() -> None:
 
     pieces = prepare_pieces(args.data_dir, config)
     windows = build_windows(pieces, stats, config)
-    loader = DataLoader(WindowDataset(windows), batch_size=config.batch_size, shuffle=False)
+
+    # Normalize oracle controls for test set using training stats
+    if enable_controls and stats.oracle_mins:
+        normalize_oracle_controls(windows, stats.oracle_mins, stats.oracle_maxs)
+
+    loader = DataLoader(
+        WindowDataset(windows, config=config, training=False),
+        batch_size=config.batch_size, shuffle=False,
+    )
 
     head_type = config.head_type
     predictions: list[np.ndarray] = []
     with torch.no_grad():
         for batch in loader:
-            output = model(
-                batch["pitch"].to(device),
-                batch["register_bucket"].to(device),
-                batch["continuous"].to(device),
-                batch["padding_mask"].to(device),
-            )
-            if head_type == "classification":
+            fwd_kwargs: dict = {
+                "pitch": batch["pitch"].to(device),
+                "register_bucket": batch["register_bucket"].to(device),
+                "continuous": batch["continuous"].to(device),
+                "padding_mask": batch["padding_mask"].to(device),
+            }
+            if enable_controls and "oracle_controls" in batch:
+                fwd_kwargs["control_params"] = batch["oracle_controls"].to(device)
+
+            output = model(**fwd_kwargs)
+
+            if head_type == "stochastic":
+                mu, _log_sigma = output
+                pred = mu  # use mean for evaluation
+            elif head_type == "classification":
                 pred = model.head.to_scalar(output, mode=args.decode_mode)
             else:
                 pred = output
@@ -114,6 +137,8 @@ def main() -> None:
     # Print summary
     print(f"\n{'='*60}")
     print(f"Evaluation Results ({agg['n_pieces']} pieces, {agg['n_notes']} notes)")
+    if enable_controls:
+        print(f"  [Oracle-conditioned evaluation]")
     print(f"{'='*60}")
     print(f"  MAE:        {agg['weighted_mae']:.2f}  (macro {agg['macro_mae']:.2f})")
     print(f"  MSE:        {agg['weighted_mse']:.2f}  (macro {agg['macro_mse']:.2f})")

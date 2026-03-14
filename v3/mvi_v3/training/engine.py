@@ -3,9 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 import torch
+import torch.nn.functional as F
 
 from .ema import ModelEMA
-from .losses import masked_cross_entropy_loss, masked_huber_loss
+from .losses import gaussian_nll_loss, masked_cross_entropy_loss, masked_huber_loss
 
 
 def run_epoch(
@@ -23,6 +24,9 @@ def run_epoch(
     head_type: str = "regression",
     num_velocity_bins: int = 128,
     label_smoothing: float = 0.0,
+    enable_controls: bool = False,
+    mask_ratio: float = 0.0,
+    aux_loss_weight: float = 0.1,
 ) -> tuple[float, int]:
     """Run one training or validation epoch.
 
@@ -35,6 +39,7 @@ def run_epoch(
     total_loss = 0.0
     total_batches = 0
     optimizer_steps = 0
+    use_aux = training and mask_ratio > 0 and hasattr(model, "has_aux_head") and model.has_aux_head
 
     if training and optimizer is not None:
         optimizer.zero_grad(set_to_none=True)
@@ -46,9 +51,25 @@ def run_epoch(
         target = batch["target_velocity"].to(device)
         padding_mask = batch["padding_mask"].to(device)
 
+        # Oracle controls
+        control_params = None
+        if enable_controls and "oracle_controls" in batch:
+            control_params = batch["oracle_controls"].to(device)
+
         with torch.set_grad_enabled(training):
-            output = model(pitch, register_bucket, continuous, padding_mask)
-            if head_type == "classification":
+            # Forward pass
+            if use_aux:
+                output, aux_recon = model.forward_with_aux(
+                    pitch, register_bucket, continuous, padding_mask, control_params,
+                )
+            else:
+                output = model(pitch, register_bucket, continuous, padding_mask, control_params)
+
+            # Main loss
+            if head_type == "stochastic":
+                mu, log_sigma = output
+                loss = gaussian_nll_loss(mu, log_sigma, target, padding_mask)
+            elif head_type == "classification":
                 loss = masked_cross_entropy_loss(
                     output, target, padding_mask,
                     num_bins=num_velocity_bins,
@@ -60,6 +81,19 @@ def run_epoch(
                     output, target, padding_mask,
                     delta=huber_delta, velocity_weight_beta=velocity_weight_beta,
                 )
+
+            # Auxiliary reconstruction loss (Phase 3)
+            if use_aux and "attr_mask" in batch:
+                attr_mask = batch["attr_mask"].to(device)  # [batch, seq_len] True=masked
+                original = batch["original_continuous"].to(device)  # [batch, seq_len, n_feat]
+                # MSE only on masked positions
+                masked_positions = attr_mask  # [batch, seq_len]
+                if masked_positions.any():
+                    aux_loss = F.mse_loss(
+                        aux_recon[masked_positions],
+                        original[masked_positions],
+                    )
+                    loss = loss + aux_loss_weight * aux_loss
 
             if training:
                 scaled_loss = loss / gradient_accumulation_steps

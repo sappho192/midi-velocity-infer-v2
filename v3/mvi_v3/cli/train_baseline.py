@@ -17,7 +17,7 @@ from mvi_v3.data.datasets import WindowDataset
 from mvi_v3.data.features import add_derived_features, sort_and_reindex
 from mvi_v3.data.ingest import load_piece_directory
 from mvi_v3.data.normalize import fit_dataset_stats
-from mvi_v3.data.windowing import build_windows
+from mvi_v3.data.windowing import build_windows, fit_oracle_stats, normalize_oracle_controls
 from mvi_v3.io.artifacts import save_json
 from mvi_v3.models.transformer import TransformerVelocityModel
 from mvi_v3.training.checkpointing import (
@@ -49,6 +49,30 @@ def parse_args() -> argparse.Namespace:
                         help="Output head type")
     parser.add_argument("--label-smoothing", type=float, default=0.1,
                         help="Label smoothing for classification head")
+    # Phase 5a: Controllable inference
+    parser.add_argument("--enable-controls", action="store_true",
+                        help="Enable oracle-conditioned controllable inference")
+    parser.add_argument("--control-dims", type=int, default=2,
+                        help="Number of control dimensions (2=oracle, 3=oracle+surprise)")
+    # Regularization
+    parser.add_argument("--dropout", type=float, default=0.1,
+                        help="Transformer dropout rate")
+    parser.add_argument("--embedding-dropout", type=float, default=0.0,
+                        help="Dropout after note embedding (0=off)")
+    parser.add_argument("--weight-decay", type=float, default=0.01,
+                        help="AdamW weight decay")
+    # Data augmentation
+    parser.add_argument("--augment-velocity-jitter", type=float, default=0.0,
+                        help="Velocity jitter in raw 0-127 scale (0=off)")
+    parser.add_argument("--augment-tempo-min", type=float, default=1.0,
+                        help="Min tempo scaling factor")
+    parser.add_argument("--augment-tempo-max", type=float, default=1.0,
+                        help="Max tempo scaling factor")
+    # Phase 3: Masked attribute regularization
+    parser.add_argument("--mask-ratio", type=float, default=0.0,
+                        help="Fraction of notes to mask for aux reconstruction (0=off)")
+    parser.add_argument("--aux-loss-weight", type=float, default=0.1,
+                        help="Weight of auxiliary reconstruction loss")
     return parser.parse_args()
 
 
@@ -99,6 +123,15 @@ def main() -> None:
         velocity_weight_beta=args.velocity_weight_beta,
         head_type=args.head_type,
         label_smoothing=args.label_smoothing,
+        enable_controls=args.enable_controls,
+        control_dims=args.control_dims,
+        dropout=args.dropout,
+        embedding_dropout=args.embedding_dropout,
+        weight_decay=args.weight_decay,
+        augment_velocity_jitter=args.augment_velocity_jitter,
+        augment_tempo_range=(args.augment_tempo_min, args.augment_tempo_max),
+        mask_ratio=args.mask_ratio,
+        aux_loss_weight=args.aux_loss_weight,
     )
 
     # Data preparation
@@ -112,13 +145,27 @@ def main() -> None:
     stats = fit_dataset_stats(train_pieces, config)
     train_windows = build_windows(train_pieces, stats, config)
     val_windows = build_windows(val_pieces, stats, config)
+
+    # Fit and apply oracle control normalization
+    if config.enable_controls:
+        oracle_mins, oracle_maxs = fit_oracle_stats(train_windows)
+        stats.oracle_mins = oracle_mins
+        stats.oracle_maxs = oracle_maxs
+        normalize_oracle_controls(train_windows, oracle_mins, oracle_maxs)
+        normalize_oracle_controls(val_windows, oracle_mins, oracle_maxs)
+        print(f"       Oracle controls: {len(oracle_mins)} dims, "
+              f"mins={[f'{v:.2f}' for v in oracle_mins]}, "
+              f"maxs={[f'{v:.2f}' for v in oracle_maxs]}")
+
     print(f"       {len(train_windows)} train windows, {len(val_windows)} val windows")
 
     train_loader = DataLoader(
-        WindowDataset(train_windows), batch_size=config.batch_size, shuffle=True
+        WindowDataset(train_windows, config=config, training=True),
+        batch_size=config.batch_size, shuffle=True,
     )
     val_loader = DataLoader(
-        WindowDataset(val_windows), batch_size=config.batch_size, shuffle=False
+        WindowDataset(val_windows, config=config, training=False),
+        batch_size=config.batch_size, shuffle=False,
     )
 
     # Model and optimizer
@@ -176,8 +223,21 @@ def main() -> None:
             early_stop_counter += 1
         print(f"Resumed from {args.resume_from} at epoch {start_epoch}")
 
+    # Print config summary
+    extras = []
+    if config.enable_controls:
+        extras.append(f"controls={config.control_dims}d")
+    if config.mask_ratio > 0:
+        extras.append(f"mask={config.mask_ratio:.0%}")
+    if config.augment_velocity_jitter > 0:
+        extras.append(f"vel_jitter=±{config.augment_velocity_jitter}")
+    if config.embedding_dropout > 0:
+        extras.append(f"emb_drop={config.embedding_dropout}")
+    extra_str = f" [{', '.join(extras)}]" if extras else ""
+
     # Training loop
-    print(f"[5/5] Starting training ({config.epochs} epochs, {total_steps} total steps, EMA={'on' if ema else 'off'})...")
+    print(f"[5/5] Starting training ({config.epochs} epochs, {total_steps} total steps, "
+          f"EMA={'on' if ema else 'off'}{extra_str})...")
     for epoch in range(start_epoch, config.epochs):
         epoch_num = epoch + 1
         epoch_start = time.monotonic()
@@ -198,6 +258,9 @@ def main() -> None:
             head_type=config.head_type,
             num_velocity_bins=config.num_velocity_bins,
             label_smoothing=config.label_smoothing,
+            enable_controls=config.enable_controls,
+            mask_ratio=config.mask_ratio,
+            aux_loss_weight=config.aux_loss_weight,
         )
         global_step += steps
 
@@ -208,6 +271,7 @@ def main() -> None:
             head_type=config.head_type,
             num_velocity_bins=config.num_velocity_bins,
             label_smoothing=config.label_smoothing,
+            enable_controls=config.enable_controls,
         )
 
         epoch_duration = time.monotonic() - epoch_start
@@ -287,15 +351,16 @@ def main() -> None:
 
     # Save final artifacts
     save_json(output_dir / "config.json", config.to_dict())
-    save_json(
-        output_dir / "stats.json",
-        {
-            "feature_means": stats.feature_means,
-            "feature_stds": stats.feature_stds,
-            "velocity_min": stats.velocity_min,
-            "velocity_max": stats.velocity_max,
-        },
-    )
+    stats_payload = {
+        "feature_means": stats.feature_means,
+        "feature_stds": stats.feature_stds,
+        "velocity_min": stats.velocity_min,
+        "velocity_max": stats.velocity_max,
+    }
+    if config.enable_controls:
+        stats_payload["oracle_mins"] = stats.oracle_mins
+        stats_payload["oracle_maxs"] = stats.oracle_maxs
+    save_json(output_dir / "stats.json", stats_payload)
     save_json(output_dir / "history.json", {"history": history})
 
 
