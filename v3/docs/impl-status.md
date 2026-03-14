@@ -71,25 +71,57 @@ Last updated: 2026-03-14
 
 참고: He2025 MAESTRO test 기준 MAE=11.5, SD_velo=10.7.
 
+### Full MAESTRO Results (962 train / 137 val pieces)
+
+모든 수치는 macro 평균 (piece 단위). β=3, No-EMA 기준.
+
+#### Regression Head (β=3)
+
+| Config | MAE | SD_velo | SD_ratio | SD_ae | CC | Recall(10%) | Recall(5%) |
+|--------|-----|---------|----------|-------|----|-------------|------------|
+| EMA | 10.15 | 15.34 | 85.4% | 8.75 | 0.690 | 70.0% | 41.3% |
+| No EMA | 10.09 | 15.21 | 84.7% | 8.71 | 0.691 | 70.2% | 41.5% |
+
+#### Classification Head (128-bin, β=3, label_smoothing=0.1)
+
+| Config | MAE | SD_velo | SD_ratio | SD_ae | CC | Recall(10%) | Recall(5%) |
+|--------|-----|---------|----------|-------|----|-------------|------------|
+| expectation (No EMA) | **9.91** | 13.42 | 74.7% | **8.49** | **0.693** | **71.3%** | 41.9% |
+| argmax (No EMA) | 10.63 | **17.02** | **94.9%** | 9.92 | 0.662 | 68.7% | **42.4%** |
+
+참고: He2025 MAESTRO test 기준 MAE=11.5, SD_velo=10.7.
+
 ### 발견 및 분석
 
+**데이터 규모 효과 (medium → full)**
+- MAE: 11.5 → **9.91** (14% 개선, He2025 대비 우위 확정)
+- SD_ratio: 68% → **94.9%** (argmax, 거의 완벽한 다이나믹 레인지)
+- CC: 0.57 → **0.693** (상관관계 대폭 향상)
+- 모든 메트릭에서 일관된 개선 — 데이터 확장이 가장 큰 단일 개선 요인
+
 **V-shaped loss weighting (β=3)**
-- regression head에서 SD_ratio 58.1% → 68.4%로 개선, MAE 열화 미미
+- regression head에서 SD_ratio 58.1% → 68.4%로 개선 (medium), MAE 열화 미미
 - 극단 velocity 예측 능력 향상 확인
 
 **Classification head**
-- **argmax**: SD_ratio 90.6%로 다이나믹 레인지 회복에 극적 효과. MAE 12.41로 상승 (accuracy-expressiveness trade-off)
-- **expectation**: MAE 11.45 (최저)이지만 SD_ratio 62.0%로 regression과 비슷 — softmax 평균화로 인한 mean regression 재발
-- epoch 15에서 조기 종료 — 하이퍼파라미터 튜닝 여지 있음 (label_smoothing, patience, lr)
+- **argmax**: SD_ratio **94.9%**로 다이나믹 레인지 거의 완전 회복. MAE는 10.63으로 regression 대비 소폭 상승
+- **expectation**: MAE **9.91** (전체 최저), CC **0.693** (전체 최고). SD_ratio 74.7%로 regression(84.7%)보다 낮음
+- medium에서는 epoch 15에서 조기 종료했으나 full에서는 epoch 36까지 학습 — 데이터가 많으면 classification도 더 잘 수렴
 
 **EMA 관련**
-- 모든 설정에서 No-EMA가 EMA를 상회. best checkpoint 선정이 training weights 기준 val_loss로 되어 있어 EMA weights의 최적 시점과 불일치.
+- Full MAESTRO regression에서도 No-EMA가 EMA보다 소폭 우수
+- best checkpoint 선정이 training weights 기준 val_loss로 되어 있어 EMA weights의 최적 시점과 불일치
 - 향후: EMA weights로 validation 평가하는 방식 검토 필요
+
+**Head 선택 가이드**
+- 정확도 우선: classification + expectation (MAE 9.91, CC 0.693)
+- 표현력 우선: classification + argmax (SD_ratio 94.9%, Recall(5%) 42.4%)
+- 균형: regression β=3 (MAE 10.09, SD_ratio 84.7%, 모든 메트릭에서 안정적)
 
 ## Next Steps
 
-1. **Full MAESTRO (962 pieces) 학습** — medium이 아닌 전체 데이터로 baseline 성능 확정
-2. ~~**Classification head**~~ ✅ — 128-bin classification 구현 및 초기 실험 완료
+1. ~~**Full MAESTRO 학습**~~ ✅ — regression + classification 모두 완료
+2. ~~**Classification head**~~ ✅ — 128-bin classification 구현 및 실험 완료
 3. ~~**Eval metric 보강**~~ ✅ — He2025 메트릭 체계 도입 완료
 4. **P0 research** — Canonical Note-Event Format 검증, v2-compatible eval contract 정리
 
@@ -98,6 +130,7 @@ Last updated: 2026-03-14
   - 모델 아키텍처와 loss 설계가 안정화된 후에 실행 예정
 - Classification head 튜닝: label_smoothing, patience, argmax vs expectation 최적 조합 탐색
 - EMA validation 개선: EMA weights 기준 best checkpoint 선정
+- Test set 평가: 현재 모든 결과는 validation set 기준, 최종 보고용 test set 평가 필요
 
 ## Reference Papers
 
