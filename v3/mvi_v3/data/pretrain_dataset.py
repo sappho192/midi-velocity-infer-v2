@@ -22,6 +22,8 @@ class PretrainWindowDataset(Dataset[dict[str, torch.Tensor]]):
     ) -> None:
         self.windows = windows
         self.config = config or BaselineConfig()
+        if not 0.0 < mask_ratio <= 1.0:
+            raise ValueError(f"mask_ratio must be in (0, 1], got {mask_ratio}")
         self.mask_ratio = mask_ratio
 
     def __len__(self) -> int:
@@ -42,11 +44,13 @@ class PretrainWindowDataset(Dataset[dict[str, torch.Tensor]]):
         # Generate MNM mask: mask_ratio fraction of valid (non-padding) notes
         seq_len = pitch.shape[0]
         n_valid = int((~padding_mask).sum().item())
-        n_mask = max(1, int(n_valid * self.mask_ratio))
-
-        valid_indices = (~padding_mask).nonzero(as_tuple=True)[0]
-        perm = torch.randperm(n_valid)[:n_mask]
-        mask_indices = valid_indices[perm]
+        if n_valid == 0:
+            mask_indices = torch.empty(0, dtype=torch.long)
+        else:
+            n_mask = max(1, int(n_valid * self.mask_ratio))
+            valid_indices = (~padding_mask).nonzero(as_tuple=True)[0]
+            perm = torch.randperm(n_valid)[:n_mask]
+            mask_indices = valid_indices[perm]
 
         mnm_mask = torch.zeros(seq_len, dtype=torch.bool)
         mnm_mask[mask_indices] = True

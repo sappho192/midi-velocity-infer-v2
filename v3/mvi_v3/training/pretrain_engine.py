@@ -52,15 +52,22 @@ def run_pretrain_epoch(
                 pitch, register_bucket, continuous, padding_mask, mnm_mask,
             )
 
-            # Pitch CE loss on masked positions only
-            masked_pitch_logits = pitch_logits[mnm_mask]  # [n_masked, 128]
-            masked_pitch_targets = original_pitch[mnm_mask]  # [n_masked]
-            pitch_loss = F.cross_entropy(masked_pitch_logits, masked_pitch_targets)
+            n_masked = int(mnm_mask.sum().item())
+            if n_masked == 0:
+                # Rare edge case (all-padding window). Keep graph-connected zero loss.
+                zero = (pitch_logits.sum() + cont_pred.sum()) * 0.0
+                pitch_loss = zero
+                cont_loss = zero
+            else:
+                # Pitch CE loss on masked positions only
+                masked_pitch_logits = pitch_logits[mnm_mask]  # [n_masked, 128]
+                masked_pitch_targets = original_pitch[mnm_mask]  # [n_masked]
+                pitch_loss = F.cross_entropy(masked_pitch_logits, masked_pitch_targets)
 
-            # Continuous MSE loss on masked positions only
-            masked_cont_pred = cont_pred[mnm_mask]  # [n_masked, n_continuous]
-            masked_cont_targets = original_continuous[mnm_mask]  # [n_masked, n_continuous]
-            cont_loss = F.mse_loss(masked_cont_pred, masked_cont_targets)
+                # Continuous MSE loss on masked positions only
+                masked_cont_pred = cont_pred[mnm_mask]  # [n_masked, n_continuous]
+                masked_cont_targets = original_continuous[mnm_mask]  # [n_masked, n_continuous]
+                cont_loss = F.mse_loss(masked_cont_pred, masked_cont_targets)
 
             loss = pitch_weight * pitch_loss + continuous_weight * cont_loss
 
@@ -85,7 +92,11 @@ def run_pretrain_epoch(
         total_batches += 1
 
     # Handle remaining accumulated gradients
-    if training and optimizer is not None and total_batches % gradient_accumulation_steps != 0:
+    if (
+        training
+        and optimizer is not None
+        and total_batches % gradient_accumulation_steps != 0
+    ):
         if max_grad_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         optimizer.step()
