@@ -17,6 +17,7 @@ dependencies = [
 mvi-v3-train = "mvi_v3.cli.train_baseline:main"
 mvi-v3-eval = "mvi_v3.cli.eval_baseline:main"
 mvi-v3-pretrain = "mvi_v3.cli.pretrain_ssl:main"
+mvi-v3-train-control-mlp = "mvi_v3.cli.train_control_mlp:main"
 
 [project.optional-dependencies]
 v2-eval = [

@@ -32,8 +32,8 @@ def parse_args() -> argparse.Namespace:
                         choices=["expectation", "argmax"],
                         help="Decoding mode for classification head")
     parser.add_argument("--control-mode", type=str, default=None,
-                        choices=["oracle", "default", "preset", "regression", "soft_preset"],
-                        help="Control mode: oracle/default/preset/regression/soft_preset")
+                        choices=["oracle", "default", "preset", "regression", "regression_mlp", "soft_preset"],
+                        help="Control mode: oracle/default/preset/regression/regression_mlp/soft_preset")
     parser.add_argument("--preset-dir", type=str, default=None,
                         help="Directory containing presets/classifier/regressor artifacts")
     return parser.parse_args()
@@ -123,6 +123,29 @@ def main() -> None:
         for w, ctrl in zip(windows, predicted):
             w.oracle_controls = ctrl.astype(np.float32)
         print(f"  Regression mode: predicted controls for {len(windows)} windows")
+    elif enable_controls and control_mode == "regression_mlp":
+        # Lightweight MLP: 21-dim features → continuous controls (no sklearn dependency)
+        from mvi_v3.models.control_predictor import ControlPredictorMLP
+        # Try checkpoint-embedded MLP first, then fall back to preset_dir
+        mlp_ckpt = None
+        if "control_mlp" in checkpoint:
+            mlp_ckpt = checkpoint["control_mlp"]
+            print("  Using checkpoint-embedded control MLP")
+        elif args.preset_dir:
+            preset_dir = Path(args.preset_dir)
+            mlp_ckpt = torch.load(preset_dir / "control_mlp.pt", map_location="cpu", weights_only=False)
+        else:
+            raise ValueError("--preset-dir is required for --control-mode regression_mlp "
+                             "(or use a checkpoint with embedded control_mlp)")
+        mlp = ControlPredictorMLP(**mlp_ckpt["config"])
+        mlp.load_state_dict(mlp_ckpt["state_dict"])
+        mlp.eval()
+        features = np.stack([extract_window_features(w) for w in windows])
+        with torch.no_grad():
+            predicted = mlp(torch.as_tensor(features, dtype=torch.float32)).numpy()
+        for w, ctrl in zip(windows, predicted):
+            w.oracle_controls = ctrl.astype(np.float32)
+        print(f"  Regression MLP mode: predicted controls for {len(windows)} windows")
     elif enable_controls and control_mode == "soft_preset":
         # Soft ensemble: top-2 weighted blending from classifier probabilities
         if not args.preset_dir:
