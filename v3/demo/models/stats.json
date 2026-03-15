@@ -1,0 +1,28 @@
+{
+  "feature_means": {
+    "duration_sec": 164.9172044808147,
+    "ioi_next_sec": 82.49743273406312,
+    "delta_pitch_prev": -0.0010377557194069685,
+    "delta_pitch_next": -0.0010377557194069685,
+    "local_note_density": 0.01879105628925907,
+    "same_onset_chord_size": 1.0833328621348683
+  },
+  "feature_stds": {
+    "duration_sec": 326.64578577600474,
+    "ioi_next_sec": 189.49040390256562,
+    "delta_pitch_prev": 15.962339412072387,
+    "delta_pitch_next": 15.962339412072387,
+    "local_note_density": 0.010688914215796359,
+    "same_onset_chord_size": 0.3144055986298852
+  },
+  "velocity_min": 0.0,
+  "velocity_max": 127.0,
+  "oracle_mins": [
+    5.3775200843811035,
+    18.018692016601562
+  ],
+  "oracle_maxs": [
+    34.69929122924805,
+    95.109375
+  ]
+}
