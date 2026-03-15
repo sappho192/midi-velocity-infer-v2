@@ -26,7 +26,7 @@ from mvi_v3.training.checkpointing import (
     save_full_checkpoint,
 )
 from mvi_v3.training.ema import ModelEMA
-from mvi_v3.training.engine import run_epoch
+from mvi_v3.training.engine import compute_val_metrics, run_epoch
 from mvi_v3.training.monitoring import TrainingMonitor
 
 
@@ -355,14 +355,22 @@ def main() -> None:
         )
 
         if wandb_run is not None:
-            wandb_run.log({
+            log_dict = {
                 "epoch": epoch_num,
                 "train_loss": train_loss,
                 "val_loss": val_loss,
                 "learning_rate": current_lr,
                 "best_val_loss": best_val_loss,
                 "early_stop_counter": early_stop_counter,
-            }, step=epoch_num)
+            }
+            val_metrics = compute_val_metrics(
+                model, val_loader, device,
+                head_type=config.head_type,
+                enable_controls=config.enable_controls,
+                velocity_range=(stats.velocity_min, stats.velocity_max),
+            )
+            log_dict.update(val_metrics)
+            wandb_run.log(log_dict, step=epoch_num)
 
         # Save latest checkpoint every epoch
         save_full_checkpoint(

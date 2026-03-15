@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -127,3 +128,75 @@ def run_epoch(
 
     avg_loss = total_loss / max(total_batches, 1)
     return avg_loss, optimizer_steps
+
+
+@torch.no_grad()
+def compute_val_metrics(
+    model: torch.nn.Module,
+    dataloader: Iterable[dict[str, torch.Tensor]],
+    device: torch.device,
+    *,
+    head_type: str = "regression",
+    enable_controls: bool = False,
+    velocity_range: tuple[float, float] = (0.0, 127.0),
+    decode_mode: str = "expectation",
+) -> dict[str, float]:
+    """Compute evaluation metrics (MAE, CC, SD_ratio, etc.) on validation set.
+
+    Collects all predictions/targets, denormalizes to 0-127 scale,
+    and computes note-level aggregate metrics.
+    """
+    model.eval()
+    all_preds: list[np.ndarray] = []
+    all_targets: list[np.ndarray] = []
+    v_min, v_max = velocity_range
+
+    for batch in dataloader:
+        pitch = batch["pitch"].to(device)
+        register_bucket = batch["register_bucket"].to(device)
+        continuous = batch["continuous"].to(device)
+        target = batch["target_velocity"].to(device)
+        padding_mask = batch["padding_mask"].to(device)
+
+        control_params = None
+        if enable_controls and "oracle_controls" in batch:
+            control_params = batch["oracle_controls"].to(device)
+
+        output = model(pitch, register_bucket, continuous, padding_mask, control_params)
+
+        if head_type == "stochastic":
+            mu, _log_sigma = output
+            pred = mu
+        elif head_type == "classification":
+            pred = model.head.to_scalar(output, mode=decode_mode)
+        else:
+            pred = output
+
+        # Denormalize to 0-127
+        pred_raw = pred.cpu().numpy() * (v_max - v_min) + v_min
+        target_raw = target.cpu().numpy() * (v_max - v_min) + v_min
+        mask = ~padding_mask.cpu().numpy()
+
+        for i in range(pred_raw.shape[0]):
+            valid = mask[i]
+            if valid.any():
+                all_preds.append(pred_raw[i][valid])
+                all_targets.append(target_raw[i][valid])
+
+    preds = np.concatenate(all_preds)
+    targets = np.concatenate(all_targets)
+
+    abs_err = np.abs(preds - targets)
+    pred_std = float(np.std(preds))
+    true_std = float(np.std(targets))
+
+    return {
+        "val_mae": float(np.mean(abs_err)),
+        "val_mse": float(np.mean((preds - targets) ** 2)),
+        "val_pred_std": pred_std,
+        "val_true_std": true_std,
+        "val_sd_ratio": pred_std / true_std if true_std > 0 else 0.0,
+        "val_cc": float(np.corrcoef(preds, targets)[0, 1]) if pred_std > 0 and true_std > 0 else 0.0,
+        "val_recall_10": float(np.mean(abs_err < 12.7)),
+        "val_recall_5": float(np.mean(abs_err < 6.4)),
+    }
