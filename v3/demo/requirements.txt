@@ -1,0 +1,6 @@
+onnxruntime
+gradio
+pretty_midi
+numpy
+soundfile
+plotly
