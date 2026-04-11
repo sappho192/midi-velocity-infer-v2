@@ -4,3 +4,5 @@ wandb/
 
 demo/assets/Nice-Steinway-Lite-v3.0.sf2
 demo/.gradio/
+
+.omc/
