@@ -74,7 +74,7 @@ def main() -> None:
         embedding_dropout=ckpt_config.get("embedding_dropout", 0.0),
         mask_ratio=0.0,  # no masking during eval
     )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     model = TransformerVelocityModel(config).to(device)
     use_ema = not args.no_ema and "ema_state_dict" in checkpoint
     if use_ema:

@@ -177,7 +177,7 @@ def main() -> None:
     )
 
     # Model and optimizer
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"[4/5] Building model on {device}...")
     model = TransformerVelocityModel(config).to(device)
 
